@@ -1,0 +1,2 @@
+INFO mock server: Using FLASHINFER backend. Capturing CUDA graphs (PIECEWISE).
+INFO mock server: profile={'ms_per_token': 20.6, 'ttft_ms': 255, 'accept': 0.0, 'k': 0}
