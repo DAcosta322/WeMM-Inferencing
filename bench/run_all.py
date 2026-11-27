@@ -18,6 +18,7 @@ import argparse
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from . import env_check
@@ -55,7 +56,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reps", type=int, default=None)
     parser.add_argument("--warmup", type=int, default=None)
     parser.add_argument("--max-tokens", type=int, default=256)
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="preferred server port; the harness advances to the next free port "
+        "unless --strict-port is given",
+    )
+    parser.add_argument(
+        "--strict-port",
+        action="store_true",
+        help="fail instead of moving to another port when --port is busy",
+    )
     parser.add_argument("--gpu-mem", type=float, default=0.90)
     parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--mtp-head", default=None, help="path to the MTP sidecar directory")
@@ -64,6 +76,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-dir", default=None)
     parser.add_argument("--startup-timeout", type=float, default=2400.0)
     parser.add_argument("--allow-busy-gpu", action="store_true")
+    parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="run even if torchcodec cannot be imported (servers will likely fail)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print server commands and exit")
     parser.add_argument("--report-only", action="store_true", help="rebuild the report from existing results")
     parser.add_argument(
@@ -164,6 +181,17 @@ def main(argv: list[str] | None = None) -> int:
     if not arms:
         raise SystemExit("no arms selected")
 
+    mtp_config_broken = False
+    if not args.self_test and any(a.requires_mtp for a in arms):
+        from .fix_vllm_config import status as vllm_config_status
+
+        if vllm_config_status() == "buggy":
+            mtp_config_broken = True
+            log(
+                "MTP preflight: this vLLM build has the Qwen3.5-MoE list/set bug; "
+                "run ./run_bench.sh fix-mtp-config"
+            )
+
     if args.dry_run:
         print(render_commands(cfg, arms))
         print(f"# model: {cfg.model}")
@@ -180,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         write_json(results_dir / "env.json", env)
     else:
         print_rule("environment")
-        env = env_check.collect(cfg.model)
+        env = env_check.collect(cfg.model, cfg.port)
         env["gpus"] = gpu_inventory()
         write_json(results_dir / "env.json", env)
         print(json.dumps({k: env.get(k) for k in ("gpu_name", "gpu_memory_total_mib", "driver",
@@ -195,6 +223,28 @@ def main(argv: list[str] | None = None) -> int:
                 "vllm is not importable from this Python; run with "
                 "BENCH_PYTHON=/path/to/patched-venv/bin/python ./run_bench.sh run"
             )
+        if mtp_config_broken and not args.skip_preflight:
+            print()
+            print(
+                "MTP arms cannot start: vLLM 0.18.0's\n"
+                "  vllm/transformers_utils/configs/qwen3_5_moe.py\n"
+                "passes a list to ignore_keys_at_rope_validation, while transformers 5.2\n"
+                "expects a set (TypeError: unsupported operand type(s) for |). vLLM 0.31.0\n"
+                "uses a set. Apply the one-line backport with:\n"
+                "  ./run_bench.sh fix-mtp-config\n"
+                "then rerun (or pass --skip-preflight to measure the other arms anyway)."
+            )
+            print()
+            raise SystemExit("preflight: MTP config backport missing")
+        if env.get("torchcodec_ok") is False:
+            print()
+            print(env_check.torchcodec_fix(env))
+            print()
+            if not args.skip_preflight:
+                raise SystemExit(
+                    "preflight failed: torchcodec cannot load its shared libraries. "
+                    "Fix it as above (or pass --skip-preflight to measure anyway)."
+                )
 
     if not args.self_test:
         check_gpu_idle(args.allow_busy_gpu)
@@ -220,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         results_dir=results_dir,
         allow_busy_gpu=args.allow_busy_gpu,
         startup_timeout=args.startup_timeout if not args.self_test else 30,
+        auto_port=not args.strict_port,
     )
 
     write_json(
@@ -245,12 +296,39 @@ def main(argv: list[str] | None = None) -> int:
 
     t_start = time.time()
     failures = []
+    # A crashed run must not leave an older report looking like today's result.
+    for name in ("report.md", "summary.json"):
+        stale = results_dir / name
+        if stale.exists():
+            stale.unlink()
+    for arm in arms:
+        stale = results_dir / f"{arm.name}.json"
+        if stale.exists():
+            stale.unlink()
     for index, arm in enumerate(arms, start=1):
         print_rule(f"arm {index}/{len(arms)}: {arm.name}")
         print(f"  {arm.label}")
         if arm.note:
             print(f"  note: {arm.note}")
-        record = run_arm(arm, ctx, launcher=launcher)
+        try:
+            record = run_arm(arm, ctx, launcher=launcher)
+        except KeyboardInterrupt:
+            log("interrupted; stopping the suite")
+            break
+        except Exception as exc:  # noqa: BLE001 - one arm must not kill the run
+            record = {
+                "arm": arm.to_dict(),
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc()[-2000:],
+                "requests": [],
+                "quality": [],
+                "summary": {},
+                "started_at": utc_now(),
+                "finished_at": utc_now(),
+            }
+            write_json(results_dir / f"{arm.name}.json", record)
+            log(f"  ARM CRASHED: {record['error']}")
         if record.get("status") != "ok":
             failures.append(arm.name)
         tps = (record.get("summary") or {}).get("decode_tps_median")

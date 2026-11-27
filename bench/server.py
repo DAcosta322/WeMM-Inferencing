@@ -17,11 +17,14 @@ import requests
 
 from .common import (
     ROOT,
+    describe_port_holder,
+    first_gpu_id,
     log,
     parse_prometheus,
     pick_port,
     port_is_free,
     read_text_tail,
+    runtime_env,
     which,
 )
 
@@ -73,6 +76,11 @@ def launcher_prefix() -> list[str]:
     override = os.environ.get("VLLM_BIN")
     if override:
         return [override, "serve"]
+    # A venv's console scripts live next to its interpreter, which is where the
+    # patched install puts `vllm`; this works even without activating the venv.
+    sibling = Path(sys.executable).with_name("vllm")
+    if sibling.exists():
+        return [str(sibling), "serve"]
     binary = which("vllm")
     if binary:
         return [binary, "serve"]
@@ -112,13 +120,27 @@ class ServerHandle:
         host: str = "127.0.0.1",
         startup_timeout: float = 2400.0,
         env: dict | None = None,
+        auto_port: bool = True,
     ) -> None:
         self.model = model
         self.served_name = served_name
         self.flags = list(flags)
         self.log_path = Path(log_path)
         self.host = host
-        self.port = port or pick_port(8000, host)
+        requested = port or 8000
+        self.auto_port = auto_port
+        self.requested_port = requested
+        if port_is_free(requested, host):
+            self.port = requested
+        elif auto_port:
+            self.port = pick_port(requested, host)
+            log(
+                f"port {requested} is busy ({describe_port_holder(requested, host)}); "
+                f"using {self.port} instead"
+            )
+        else:
+            # --strict-port: fail loudly in start() instead of moving.
+            self.port = requested
         self.startup_timeout = startup_timeout
         self.base_url = f"http://{host}:{self.port}"
         self._extra_env = dict(env or {})
@@ -140,10 +162,25 @@ class ServerHandle:
 
     def start(self) -> None:
         if not port_is_free(self.port, self.host):
-            raise ServerStartError(f"port {self.port} is already in use", self.log_path)
+            if self.auto_port:
+                previous = self.port
+                self.port = pick_port(previous + 1, self.host)
+                self.base_url = f"http://{self.host}:{self.port}"
+                log(
+                    f"port {previous} was taken between launch and start; "
+                    f"using {self.port} instead"
+                )
+            else:
+                holder = describe_port_holder(self.port, self.host)
+                raise ServerStartError(
+                    f"port {self.port} is already in use by {holder}. "
+                    f"Free it, or pass a different --port (or drop --strict-port "
+                    f"to let the harness advance automatically).",
+                    self.log_path,
+                )
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_fh = self.log_path.open("w", encoding="utf-8")
-        env = os.environ.copy()
+        env = runtime_env()
         env.update(self._extra_env)
         env.setdefault("VLLM_LOGGING_LEVEL", "INFO")
         env.setdefault("PYTHONUNBUFFERED", "1")
@@ -382,21 +419,23 @@ class GpuSampler(threading.Thread):
 
     QUERY = "utilization.gpu,memory.used,power.draw,clocks.sm,temperature.gpu"
 
-    def __init__(self, interval: float = 1.0, gpu_index: int = 0) -> None:
+    def __init__(self, interval: float = 1.0, gpu_id: str | None = None) -> None:
         super().__init__(daemon=True)
         self.interval = interval
-        self.gpu_index = gpu_index
+        self.gpu_id = gpu_id if gpu_id else first_gpu_id()
         self.samples: list[dict] = []
-        self._stop = threading.Event()
+        # NB: must not be called ``_stop`` — threading.Thread._stop() is called
+        # by join() and shadowing it turns teardown into a TypeError.
+        self._stop_event = threading.Event()
 
     def run(self) -> None:
         cmd = [
             "nvidia-smi",
-            f"--id={self.gpu_index}",
+            f"--id={self.gpu_id}",
             f"--query-gpu={self.QUERY}",
             "--format=csv,noheader,nounits",
         ]
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
                 if proc.returncode == 0 and proc.stdout.strip():
@@ -413,10 +452,10 @@ class GpuSampler(threading.Thread):
                         )
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            self._stop.wait(self.interval)
+            self._stop_event.wait(self.interval)
 
     def stop(self) -> dict:
-        self._stop.set()
+        self._stop_event.set()
         self.join(timeout=5)
         keys = ["utilization_gpu", "memory_used_mib", "power_w", "clocks_sm_mhz", "temperature_c"]
         summary: dict[str, dict] = {}

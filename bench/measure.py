@@ -14,6 +14,7 @@ from .common import (
     gpu_inventory,
     log,
     read_text_tail,
+    run_cmd,
     utc_now,
     write_json,
 )
@@ -30,8 +31,28 @@ class MeasureContext:
     startup_timeout: float = 2400.0
     read_timeout: float = 1200.0
     warmup_tokens: int = 32
+    auto_port: bool = True
     inter_request_sleep: float = 0.2
     env: dict = field(default_factory=dict)
+
+
+def _gpu_compute_processes() -> list[str]:
+    rc, out, _ = run_cmd(
+        [
+            "nvidia-smi",
+            "--query-compute-apps=pid,process_name,used_memory",
+            "--format=csv,noheader,nounits",
+        ],
+        timeout=10,
+    )
+    if rc != 0 or not out.strip():
+        return []
+    lines = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 3:
+            lines.append(f"pid {parts[0]} {parts[1]} ({parts[2]} MiB)")
+    return lines
 
 
 def check_gpu_idle(allow_busy: bool) -> list[dict]:
@@ -43,9 +64,13 @@ def check_gpu_idle(allow_busy: bool) -> list[dict]:
         detail = ", ".join(
             f"gpu{g['index']} {g['memory_used_mib']} MiB used" for g in busy
         )
+        processes = _gpu_compute_processes()
+        holders = ""
+        if processes:
+            holders = "\nGPU processes: " + "; ".join(processes[:6])
         raise SystemExit(
-            f"GPU is busy ({detail}). Stop other inference processes first, "
-            f"or pass --allow-busy-gpu."
+            f"GPU is busy ({detail}).{holders}\n"
+            f"Stop them first (e.g. `kill <pid>`), or pass --allow-busy-gpu."
         )
     return gpus
 
@@ -66,6 +91,24 @@ def _quantile(values: list[float], q: float) -> float | None:
     high = min(low + 1, len(clean) - 1)
     frac = pos - low
     return clean[low] * (1 - frac) + clean[high] * frac
+
+
+def _environment_hint(text: str) -> str | None:
+    low = text.lower()
+    if "libnppicc" in low or "torchcodec" in low or "could not load this library" in low:
+        return (
+            "torchcodec/NPP: install nvidia-npp-cu12==12.4.1.87 in the serving venv; "
+            "the harness then injects LD_LIBRARY_PATH automatically. "
+            "Run ./run_bench.sh env for the exact commands."
+        )
+    if "flashinfer" in low and ("not valid" in low or "no kernel" in low):
+        return (
+            "FlashInfer rejected on this GPU; rerun the arm without "
+            "--attention-backend FLASHINFER (the harness retries once automatically)."
+        )
+    if "out of memory" in low or "cuda oom" in low:
+        return "GPU OOM: retry with --gpu-mem 0.95 or a smaller --max-model-len."
+    return None
 
 
 def _without_flag(flags: list[str], flag: str) -> list[str]:
@@ -161,11 +204,21 @@ def run_arm(
                     port=cfg.port,
                     startup_timeout=ctx.startup_timeout,
                     env=ctx.env,
+                    auto_port=ctx.auto_port,
                 )
             else:
                 new_handle = launcher(arm, log_path)
-            new_handle.start()
-            new_handle.wait_ready()
+            try:
+                new_handle.start()
+                new_handle.wait_ready()
+            except Exception:
+                # A timed-out server may still be holding GPU memory; stop it
+                # before the caller retries with different flags.
+                try:
+                    new_handle.stop()
+                except Exception:  # noqa: BLE001 - teardown must not mask the error
+                    pass
+                raise
             return new_handle
 
         try:
@@ -270,6 +323,10 @@ def run_arm(
         record["status"] = "failed"
         record["error"] = str(exc)
         record["log_tail"] = read_text_tail(log_path, 80)
+        hint = _environment_hint(str(exc) + "\n" + record["log_tail"])
+        if hint:
+            record["hint"] = hint
+            log(f"  HINT: {hint}")
         log(f"  ARM FAILED: {exc}")
     except KeyboardInterrupt:
         record["status"] = "interrupted"
@@ -280,10 +337,19 @@ def run_arm(
         record["log_tail"] = read_text_tail(log_path, 80)
         log(f"  ARM ERROR: {record['error']}")
     finally:
+        # Teardown is best-effort: a broken sampler or a stuck server must not
+        # discard a measurement that already completed.
         if gpu_sampler is not None:
-            record["gpu_sampling"] = gpu_sampler.stop()
+            try:
+                record["gpu_sampling"] = gpu_sampler.stop()
+            except Exception as exc:  # noqa: BLE001
+                record["gpu_sampling_error"] = f"{type(exc).__name__}: {exc}"
+                log(f"  WARNING: GPU sampler teardown failed: {exc}")
         if client is not None:
-            client.close()
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
         if handle is not None:
             try:
                 if hasattr(handle, "set_metrics_baseline"):
@@ -300,6 +366,7 @@ def run_arm(
                     record["snapshot"] = snapshot
             except Exception as exc:  # noqa: BLE001
                 record.setdefault("teardown_error", f"{type(exc).__name__}: {exc}")
+                log(f"  WARNING: server teardown failed: {exc}")
         if not record.get("summary"):
             record["summary"] = summarise_requests(record.get("requests", []))
         record["duration_s"] = round(time.time() - t_arm, 2)

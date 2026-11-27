@@ -267,24 +267,56 @@ def build_report(
         "computed with the server tokenizer; 100% means the two outputs are token-identical."
     )
     lines.append("")
+    recheck = next(
+        (row for row in quality_rows if row["arm"] == "baseline_recheck"), None
+    )
+    noise_floor = recheck["token_prefix_ratio_median"] if recheck else None
+    if noise_floor is not None:
+        lines.append(
+            f"Run-to-run noise floor (identical flags, two servers): "
+            f"**{noise_floor * 100:.1f}%** token prefix. Greedy output is not bit-stable "
+            "across server restarts on this model, so small differences are not a quality "
+            "signal."
+        )
+        lines.append("")
+    else:
+        lines.append(
+            "No same-config re-run in this invocation, so the noise floor is unknown; "
+            "the default suite includes `baseline_recheck` and measures it."
+        )
+        lines.append("")
     lines.append("| Arm | Claim | Exact matches | Token prefix (median) | Verdict |")
     lines.append("| --- | --- | ---: | ---: | --- |")
     for row in quality_rows:
         if row["compared"] == 0:
             continue
         rate = row["exact_rate"] or 0.0
-        ratio = row["token_prefix_ratio_median"]
-        if row["claim"] == "exact":
-            verdict = "OK (identical)" if rate == 1.0 else "**UNEXPECTED divergence**"
+        ratio = row["token_prefix_ratio_median"] or 0.0
+        if row["arm"] == "baseline_recheck":
+            verdict = "noise floor"
+        elif row["claim"] == "exact":
+            if rate == 1.0:
+                verdict = "identical"
+            elif noise_floor is not None and ratio >= noise_floor - 1e-9:
+                verdict = "within run-to-run noise"
+            elif ratio >= 0.99:
+                verdict = "≈identical (≤1% drift)"
+            else:
+                verdict = "**diverged**"
         elif row["claim"] == "baseline":
             verdict = "reference"
         elif row["claim"] == "unknown":
             verdict = "not claimed"
         else:
-            verdict = "exact" if rate == 1.0 else "diverges (expected risk)"
+            if rate == 1.0:
+                verdict = "identical"
+            elif noise_floor is not None and ratio >= noise_floor - 1e-9:
+                verdict = "within noise"
+            else:
+                verdict = f"diverged ({100 - ratio * 100:.0f}% of tokens)"
         lines.append(
             f"| `{row['arm']}` | {row['claim']} | {row['exact']}/{row['compared']} | "
-            f"{_fmt((ratio or 0) * 100, 1, '%')} | {verdict} |"
+            f"{_fmt(ratio * 100, 1, '%')} | {verdict} |"
         )
     lines.append("")
 
@@ -298,6 +330,24 @@ def build_report(
             lines.append("arm:      " + div["arm_text"])
             lines.append("```")
             lines.append("</details>")
+            lines.append("")
+
+    failed = [r for r in records if r.get("status") != "ok"]
+    if failed:
+        lines.append("## Failed arms")
+        lines.append("")
+        for record in failed:
+            lines.append(f"### `{record['arm']['name']}` — {record.get('status')}")
+            lines.append("")
+            hint = record.get("hint")
+            if hint:
+                lines.append(f"**Hint:** {hint}")
+                lines.append("")
+            error = (record.get("error") or "no error recorded").strip()
+            tail = "\n".join(error.splitlines()[-25:])
+            lines.append("```")
+            lines.append(tail)
+            lines.append("```")
             lines.append("")
 
     lines.append("## What actually ran")

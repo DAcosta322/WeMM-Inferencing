@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-11-22T15:18:33+00:00",
+  "started_at": "2026-11-27T07:00:15+00:00",
   "argv": [
     "/home/daniel/Projects/Inferencing/bench/run_all.py",
     "--self-test",
@@ -12,7 +12,7 @@
     "flashinfer_fp8kv",
     "mtp3",
     "mtp3_fp8kv",
-    "ngram"
+    "baseline_recheck"
   ],
   "config": {
     "model": "tencent/WeMM-Video-35BA3B",

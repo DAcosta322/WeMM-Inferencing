@@ -181,22 +181,21 @@ def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
                 )
             )
 
-    arms.append(
-        Arm(
-            name="ngram",
-            label="+ FlashInfer + n-gram speculation (K=4)",
-            kind="opt",
-            extra_flags=flashinfer
-            + [
-                "--speculative-config",
-                '{"method":"ngram","num_speculative_tokens":4,"prompt_lookup_max":4,"prompt_lookup_min":2}',
-            ],
-            claim_exact="exact",
-            note="No extra weights; verifies against the target. Gains appear only on repetitive text.",
-        )
-    )
-
     if full:
+        arms.append(
+            Arm(
+                name="ngram",
+                label="+ FlashInfer + n-gram speculation (K=4)",
+                kind="opt",
+                extra_flags=flashinfer
+                + [
+                    "--speculative-config",
+                    '{"method":"ngram","num_speculative_tokens":4,"prompt_lookup_max":4,"prompt_lookup_min":2}',
+                ],
+                claim_exact="exact",
+                note="Measured: slower (0.82x) and diverged on this hybrid model; kept as a negative result.",
+            )
+        )
         if mtp_ready:
             arms.append(
                 Arm(
@@ -221,6 +220,16 @@ def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
                 note="Quantifies what CUDA graphs are worth on this GPU.",
             )
         )
+    # Run last in every suite: quantifies clock drift and greedy-output noise.
+    arms.append(
+        Arm(
+            name="baseline_recheck",
+            label="Baseline re-run (drift / noise floor)",
+            kind="opt",
+            claim_exact="baseline",
+            note="Identical flags to baseline, run last; the quality table uses it as the noise floor.",
+        )
+    )
     return arms
 
 

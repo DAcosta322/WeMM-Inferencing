@@ -72,6 +72,31 @@ def port_is_free(port: int, host: str = "127.0.0.1") -> bool:
     return True
 
 
+def describe_port_holder(port: int, host: str = "127.0.0.1") -> str:
+    """Best-effort "who is listening on this port" for error messages.
+
+    ``ss`` usually needs the same user (or root) to show the process name; when
+    it cannot, we still report that the port is taken and by which address.
+    """
+    rc, out, _ = run_cmd(["ss", "-ltnpH", f"sport = :{port}"], timeout=5)
+    if rc == 0 and out.strip():
+        procs = re.findall(r'users:\(\("([^"]+)",pid=(\d+)', out)
+        if procs:
+            return ", ".join(f"{name} (pid {pid})" for name, pid in procs)
+        first = out.strip().splitlines()[0]
+        return " ".join(first.split()[:4])
+    rc, out, _ = run_cmd(
+        ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], timeout=5
+    )
+    if rc == 0 and out.strip():
+        lines = out.strip().splitlines()
+        if len(lines) > 1:
+            parts = lines[1].split()
+            if len(parts) >= 2:
+                return f"{parts[0]} (pid {parts[1]})"
+    return "unknown process"
+
+
 def pick_port(preferred: int, host: str = "127.0.0.1") -> int:
     if port_is_free(preferred, host):
         return preferred
@@ -87,7 +112,9 @@ def which(name: str) -> str | None:
     return _which(name)
 
 
-def run_cmd(cmd: list[str], timeout: float = 60.0) -> tuple[int, str, str]:
+def run_cmd(
+    cmd: list[str], timeout: float = 60.0, env: dict | None = None
+) -> tuple[int, str, str]:
     """Run a command, returning (returncode, stdout, stderr). Never raises on rc."""
     try:
         proc = subprocess.run(
@@ -96,6 +123,7 @@ def run_cmd(cmd: list[str], timeout: float = 60.0) -> tuple[int, str, str]:
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except FileNotFoundError:
@@ -104,16 +132,86 @@ def run_cmd(cmd: list[str], timeout: float = 60.0) -> tuple[int, str, str]:
         return 124, "", f"timed out after {timeout}s: {' '.join(cmd)}"
 
 
+def cuda_visible_devices() -> str | None:
+    """Return the raw CUDA_VISIBLE_DEVICES value, or None when all GPUs are visible."""
+    value = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    return value
+
+
+def gpu_query_id() -> str | None:
+    """The value to pass to ``nvidia-smi --id=``, or None for every GPU.
+
+    Slurm and most schedulers allocate GPUs by setting CUDA_VISIBLE_DEVICES.
+    Querying nvidia-smi without ``--id`` would then list *other users'* GPUs,
+    which breaks both the idle check and the per-arm GPU sampling.
+    """
+    cvd = cuda_visible_devices()
+    if cvd is None or cvd == "-1":
+        return cvd
+    return cvd
+
+
+def first_gpu_id(default: str = "0") -> str:
+    """Identifier of the first allocated GPU for nvidia-smi."""
+    cvd = cuda_visible_devices()
+    if not cvd or cvd == "-1":
+        return default
+    return cvd.split(",")[0].strip() or default
+
+
+def find_npp_lib_dir() -> str | None:
+    """Locate CUDA NPP shared libraries installed as a Python wheel.
+
+    torchcodec (imported by the WeMM processor) links against libnppicc.so.12,
+    which PyTorch does not bundle. The nvidia-npp-cu12/cu13 wheels ship it under
+    ``nvidia/npp/lib``; that directory has to be on LD_LIBRARY_PATH.
+    """
+    from importlib import metadata
+
+    for dist_name in ("nvidia-npp-cu12", "nvidia-npp-cu13", "nvidia-cuda-npp"):
+        try:
+            dist = metadata.distribution(dist_name)
+        except metadata.PackageNotFoundError:
+            continue
+        base = Path(dist.locate_file("nvidia/npp/lib"))
+        if base.is_dir():
+            return str(base)
+    return None
+
+
+def runtime_env(base: dict | None = None) -> dict:
+    """Environment for child processes: venv bin on PATH, NPP libs on LD_LIBRARY_PATH."""
+    env = dict(os.environ if base is None else base)
+    npp = find_npp_lib_dir()
+    if npp:
+        parts = [p for p in env.get("LD_LIBRARY_PATH", "").split(":") if p]
+        if npp not in parts:
+            env["LD_LIBRARY_PATH"] = ":".join([npp, *parts])
+    venv_bin = str(Path(sys.executable).parent)
+    path = [p for p in env.get("PATH", "").split(":") if p]
+    if venv_bin not in path:
+        env["PATH"] = ":".join([venv_bin, *path])
+    return env
+
+
 def gpu_inventory() -> list[dict]:
-    """Query nvidia-smi once. Returns [] when no driver/GPU is visible."""
-    rc, out, _ = run_cmd(
-        [
-            "nvidia-smi",
-            "--query-gpu=index,name,memory.total,memory.used,driver_version,compute_cap",
-            "--format=csv,noheader,nounits",
-        ],
-        timeout=20,
-    )
+    """Query nvidia-smi once (allocated GPUs only). Returns [] when none are visible."""
+    if cuda_visible_devices() == "-1":
+        return []
+    cmd = ["nvidia-smi"]
+    target = gpu_query_id()
+    if target:
+        cmd.append(f"--id={target}")
+    cmd += [
+        "--query-gpu=index,name,memory.total,memory.used,driver_version,compute_cap",
+        "--format=csv,noheader,nounits",
+    ]
+    rc, out, _ = run_cmd(cmd, timeout=20)
     if rc != 0:
         return []
     gpus = []
@@ -179,8 +277,12 @@ def parse_prometheus(text: str) -> dict[str, float]:
 
 
 def free_disk_gib(path: Path | str = ROOT) -> float:
+    """Free space on the filesystem that would hold ``path`` (may not exist yet)."""
+    target = Path(path)
+    while not target.exists() and target.parent != target:
+        target = target.parent
     try:
-        usage = os.statvfs(str(path))
+        usage = os.statvfs(str(target))
         return usage.f_bavail * usage.f_frsize / (1024**3)
     except OSError:
         return float("nan")
