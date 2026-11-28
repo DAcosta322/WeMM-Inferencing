@@ -94,7 +94,8 @@ def _mtp_spec(head: Path | None, k: int) -> list[str]:
 
 
 def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
-    flashinfer = ["--attention-backend", "FLASHINFER"]
+    # No explicit --attention-backend: stock vLLM selects TRITON on this GPU and an
+    # explicit FLASHINFER pin crashed engine init on the rebuilt environment.
     fp8kv = ["--kv-cache-dtype", "fp8"]
 
     arms = [
@@ -103,23 +104,7 @@ def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
             label="Out-of-the-box BF16 (official recipe, TP=1)",
             kind="baseline",
             claim_exact="baseline",
-            note="No extra flags. CUDA graphs and the default attention backend are whatever vLLM picks.",
-        ),
-        Arm(
-            name="flashinfer",
-            label="+ FlashInfer pinned",
-            kind="opt",
-            extra_flags=flashinfer,
-            claim_exact="exact",
-            note="CUDA graphs are already enabled by default; this pins the attention backend.",
-        ),
-        Arm(
-            name="flashinfer_fp8kv",
-            label="+ FlashInfer + FP8 KV cache",
-            kind="opt",
-            extra_flags=flashinfer + fp8kv,
-            claim_exact="likely",
-            note="FP8 KV is lossy by construction; the quality table shows whether tokens moved.",
+            note="No extra flags; vLLM selects TRITON + CUDA graphs on this GPU.",
         ),
     ]
 
@@ -128,88 +113,94 @@ def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
         arms.append(
             Arm(
                 name="mtp3",
-                label="+ FlashInfer + MTP K=3",
+                label="+ MTP K=3 (grafted Qwen head)",
                 kind="opt",
-                extra_flags=flashinfer + _mtp_spec(cfg.mtp_head, 3),
+                extra_flags=_mtp_spec(cfg.mtp_head, 3),
                 claim_exact="exact",
-                note="Grafted Qwen3.5 MTP head; speculative verification keeps greedy output identical.",
+                note="Speculative verification keeps the target distribution; watch the acceptance rate.",
                 requires_mtp=True,
             )
         )
-        arms.append(
-            Arm(
-                name="mtp3_fp8kv",
-                label="+ FlashInfer + FP8 KV + MTP K=3",
-                kind="opt",
-                extra_flags=flashinfer + fp8kv + _mtp_spec(cfg.mtp_head, 3),
-                claim_exact="likely",
-                note="The full listed optimisation set.",
-                requires_mtp=True,
-            )
-        )
-        if full:
-            arms.append(
-                Arm(
-                    name="flashinfer_fp8kv_scaled",
-                    label="+ FlashInfer + FP8 KV (runtime scales)",
-                    kind="opt",
-                    extra_flags=flashinfer + fp8kv + ["--calculate-kv-scales"],
-                    claim_exact="likely",
-                    note="Adds --calculate-kv-scales; better FP8 accuracy, one calibration pass.",
-                )
-            )
-            arms.append(
-                Arm(
-                    name="mtp5",
-                    label="+ FlashInfer + MTP K=5",
-                    kind="opt",
-                    extra_flags=flashinfer + _mtp_spec(cfg.mtp_head, 5),
-                    claim_exact="exact",
-                    note="Deeper speculation trades acceptance for fewer target forwards.",
-                    requires_mtp=True,
-                )
-            )
-            arms.append(
-                Arm(
-                    name="mtp7",
-                    label="+ FlashInfer + MTP K=7",
-                    kind="opt",
-                    extra_flags=flashinfer + _mtp_spec(cfg.mtp_head, 7),
-                    claim_exact="exact",
-                    note="Upper end of the acceptance sweep.",
-                    requires_mtp=True,
-                )
-            )
 
     if full:
         arms.append(
             Arm(
-                name="ngram",
-                label="+ FlashInfer + n-gram speculation (K=4)",
+                name="fp8kv",
+                label="+ FP8 KV cache",
                 kind="opt",
-                extra_flags=flashinfer
-                + [
+                extra_flags=fp8kv,
+                claim_exact="likely",
+                note="Fails to build its FlashInfer FP8 prefill kernel on this box; run 1 showed +0.1%.",
+            )
+        )
+        arms.append(
+            Arm(
+                name="fp8kv_scaled",
+                label="+ FP8 KV with runtime scales",
+                kind="opt",
+                extra_flags=fp8kv + ["--calculate-kv-scales"],
+                claim_exact="likely",
+                note="Same FlashInfer JIT dependency as fp8kv.",
+            )
+        )
+        if mtp_ready:
+            for k in (1, 5, 7):
+                arms.append(
+                    Arm(
+                        name=f"mtp{k}",
+                        label=f"+ MTP K={k}",
+                        kind="opt",
+                        extra_flags=_mtp_spec(cfg.mtp_head, k),
+                        claim_exact="exact",
+                        note="Acceptance-vs-depth sweep.",
+                        requires_mtp=True,
+                    )
+                )
+            arms.append(
+                Arm(
+                    name="mtp3_fp8kv",
+                    label="+ MTP K=3 + FP8 KV",
+                    kind="opt",
+                    extra_flags=fp8kv + _mtp_spec(cfg.mtp_head, 3),
+                    claim_exact="likely",
+                    note="Shares the FP8 KV JIT failure; run 1's FP8 KV showed no gain.",
+                    requires_mtp=True,
+                )
+            )
+            arms.append(
+                Arm(
+                    name="single_seq",
+                    label="+ MTP K=3 + max-num-seqs 1",
+                    kind="opt",
+                    extra_flags=_mtp_spec(cfg.mtp_head, 3) + ["--max-num-seqs", "1"],
+                    claim_exact="exact",
+                    note="Single-user scheduling: smaller CUDA graph set.",
+                    requires_mtp=True,
+                )
+            )
+        arms.append(
+            Arm(
+                name="pin_flashinfer",
+                label="Diagnostic: explicit --attention-backend FLASHINFER",
+                kind="diagnostic",
+                extra_flags=["--attention-backend", "FLASHINFER"],
+                claim_exact="baseline",
+                note="Crashes engine init on the rebuilt env; kept for diagnosis only.",
+            )
+        )
+        arms.append(
+            Arm(
+                name="ngram",
+                label="+ n-gram speculation (K=4)",
+                kind="opt",
+                extra_flags=[
                     "--speculative-config",
                     '{"method":"ngram","num_speculative_tokens":4,"prompt_lookup_max":4,"prompt_lookup_min":2}',
                 ],
                 claim_exact="exact",
-                note="Measured: slower (0.82x) and diverged on this hybrid model; kept as a negative result.",
+                note="Measured: 0.82x and diverged on this hybrid model; negative result only.",
             )
         )
-        if mtp_ready:
-            arms.append(
-                Arm(
-                    name="single_seq",
-                    label="+ FlashInfer + MTP K=3 + max-num-seqs 1",
-                    kind="opt",
-                    extra_flags=flashinfer
-                    + _mtp_spec(cfg.mtp_head, 3)
-                    + ["--max-num-seqs", "1"],
-                    claim_exact="exact",
-                    note="Single-user scheduling: smaller CUDA graph set, no batching headroom wasted.",
-                    requires_mtp=True,
-                )
-            )
         arms.append(
             Arm(
                 name="eager",
@@ -220,6 +211,7 @@ def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
                 note="Quantifies what CUDA graphs are worth on this GPU.",
             )
         )
+
     # Run last in every suite: quantifies clock drift and greedy-output noise.
     arms.append(
         Arm(

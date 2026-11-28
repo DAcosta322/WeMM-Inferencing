@@ -55,24 +55,54 @@ def _gpu_compute_processes() -> list[str]:
     return lines
 
 
-def check_gpu_idle(allow_busy: bool) -> list[dict]:
-    gpus = gpu_inventory()
-    if not gpus:
-        return gpus
-    busy = [g for g in gpus if g["memory_used_mib"] > 3000]
-    if busy and not allow_busy:
-        detail = ", ".join(
-            f"gpu{g['index']} {g['memory_used_mib']} MiB used" for g in busy
+REQUIRED_FREE_MIB = 78_000  # BF16 weights (~69 GiB) + MTP sidecar + KV/graphs
+
+
+def check_gpu_idle(allow_busy: bool, wait_seconds: float = 0) -> list[dict]:
+    deadline = time.time() + max(0.0, wait_seconds)
+    while True:
+        gpus = gpu_inventory()
+        if not gpus:
+            return gpus
+        busy = [g for g in gpus if g["memory_used_mib"] > 3000]
+        if not busy or allow_busy:
+            return gpus
+        if time.time() >= deadline:
+            break
+        free = busy[0]["memory_total_mib"] - busy[0]["memory_used_mib"]
+        log(
+            f"waiting for an idle GPU: {free} MiB free, need ~{REQUIRED_FREE_MIB} MiB; "
+            f"{int(deadline - time.time())}s left"
         )
-        processes = _gpu_compute_processes()
-        holders = ""
-        if processes:
-            holders = "\nGPU processes: " + "; ".join(processes[:6])
-        raise SystemExit(
-            f"GPU is busy ({detail}).{holders}\n"
-            f"Stop them first (e.g. `kill <pid>`), or pass --allow-busy-gpu."
+        time.sleep(30)
+    processes = _gpu_compute_processes()
+    lines = []
+    for gpu in busy:
+        free = gpu["memory_total_mib"] - gpu["memory_used_mib"]
+        lines.append(
+            f"gpu{gpu['index']} ({gpu['name']}): {free} MiB free of "
+            f"{gpu['memory_total_mib']} MiB ({gpu['memory_used_mib']} MiB in use)"
         )
-    return gpus
+    detail = "\n  ".join(lines)
+    holders = ""
+    if processes:
+        holders = "\nGPU processes:\n  " + "\n  ".join(processes[:8])
+    raise SystemExit(
+        f"Not enough free GPU memory to start the benchmark:\n  {detail}{holders}\n"
+        f"BF16 weights + the MTP sidecar + KV/activations need about "
+        f"{REQUIRED_FREE_MIB} MiB free.\n"
+        "\n"
+        "Do NOT kill a PID you do not own. Options, in order:\n"
+        "  1. If the process is yours, stop it (kill <pid>) and rerun.\n"
+        "  2. Wait for the other job to finish, or request another allocation/GPU.\n"
+        "     Inspect this allocation with:\n"
+        "       srun --gres=gpu:1 --mem=8G --pty bash -lc 'nvidia-smi; echo CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES'\n"
+        "     If the node enables MPS, Slurm may share a GPU across users; ask for a\n"
+        "     free node or exclusive GPU access.\n"
+        "  3. --allow-busy-gpu overrides this check, but BF16 will not fit next to a\n"
+        "     37 GiB neighbour and vLLM will OOM during startup. It is only useful for\n"
+        "     small models or quantised checkpoints.\n"
+    )
 
 
 def _median(values: list[float]) -> float | None:
@@ -224,12 +254,25 @@ def run_arm(
         try:
             handle = launch(arm.flags(cfg))
         except ServerStartError as exc:
-            text = str(exc).upper()
-            if "FLASHINFER" in arm.extra_flags and "FLASHINFER" in text and (
-                "NOT VALID" in text or "NOT SUPPORT" in text or "IMPORTERROR" in text
+            low = str(exc).lower()
+            # An explicit attention backend can crash engine init even when the
+            # auto-selected backend is the same one (seen with FLASHINFER on a
+            # rebuilt environment). Retry once with vLLM's own selection.
+            if "--attention-backend" in arm.flags(cfg) and any(
+                marker in low
+                for marker in (
+                    "engine core initialization failed",
+                    "flashinfer",
+                    "not valid",
+                    "not support",
+                    "importerror",
+                )
             ):
                 fallback = _without_flag(arm.flags(cfg), "--attention-backend")
-                record["fallback"] = "FLASHINFER rejected on this GPU; using the default backend"
+                record["fallback"] = (
+                    "explicit --attention-backend failed at engine init; "
+                    "retried with vLLM's automatic backend selection"
+                )
                 log(f"  {record['fallback']}; retrying once")
                 if handle is not None:
                     handle.stop()

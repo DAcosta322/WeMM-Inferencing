@@ -114,7 +114,10 @@ def collect(model: str | None = None, port: int = 8000) -> dict:
     primary = gpus[0] if gpus else {}
     rc, smi_version, _ = run_cmd(["nvidia-smi", "--version"], timeout=20)
     torch_version = _version("torch")
+    from . import BUILD, __version__
+
     env = {
+        "harness_version": f"{__version__} ({BUILD})",
         "python": sys.version.split()[0],
         "python_executable": sys.executable,
         "torch": torch_version,
@@ -126,6 +129,11 @@ def collect(model: str | None = None, port: int = 8000) -> dict:
         "gpu_name": primary.get("name"),
         "gpu_memory_total_mib": primary.get("memory_total_mib"),
         "gpu_memory_used_mib": primary.get("memory_used_mib"),
+        "gpu_memory_free_mib": (
+            primary.get("memory_total_mib", 0) - primary.get("memory_used_mib", 0)
+            if primary
+            else None
+        ),
         "driver": primary.get("driver"),
         "compute_cap": primary.get("compute_cap"),
         "nvidia_smi_version": _first_line(smi_version) if rc == 0 else None,
@@ -216,6 +224,13 @@ def _problems(env: dict) -> list[str]:
     if env.get("gpu_memory_total_mib") and env["gpu_memory_total_mib"] < 70000:
         problems.append(
             f"GPU has {env['gpu_memory_total_mib']} MiB; BF16 WeMM-35B needs about 70 GiB of weights"
+        )
+    free = env.get("gpu_memory_free_mib")
+    if free is not None and free < 78000:
+        problems.append(
+            f"only {free} MiB of GPU memory is free; BF16 + MTP needs about 78,000 MiB. "
+            "The run will refuse to start until the GPU is free (see the GPU-busy message "
+            "for options; do not kill another user's process)"
         )
     return problems
 

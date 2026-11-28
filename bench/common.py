@@ -53,6 +53,37 @@ def _json_default(obj):
     raise TypeError(f"not JSON serialisable: {type(obj)!r}")
 
 
+_ERROR_LINE = re.compile(
+    r"(?:^|[\s(])(?:[A-Za-z_][\w.]*)?(?:Error|Exception)\s*:"
+)
+
+
+def read_error_excerpt(
+    path: Path | str, max_hits: int = 6, context: int = 2
+) -> str:
+    """Lines around the last few exception messages, not just the tail.
+
+    vLLM wraps engine-core crashes in a generic "Engine core initialization
+    failed" RuntimeError, so a plain tail can hide the actual cause.
+    """
+    try:
+        with Path(path).open("r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return ""
+    hits = [
+        index
+        for index, line in enumerate(lines)
+        if _ERROR_LINE.search(line) or "CUDA out of memory" in line
+    ]
+    if not hits:
+        return read_text_tail(path, 40)
+    indices: set[int] = set()
+    for index in hits[-max_hits:]:
+        indices.update(range(max(0, index - context), min(len(lines), index + context + 1)))
+    return "\n".join(lines[index].rstrip() for index in sorted(indices))
+
+
 def read_text_tail(path: Path | str, n_lines: int = 40) -> str:
     try:
         with Path(path).open("r", encoding="utf-8", errors="replace") as fh:

@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-11-27T07:00:15+00:00",
+  "started_at": "2026-11-28T03:48:17+00:00",
   "argv": [
     "/home/daniel/Projects/Inferencing/bench/run_all.py",
     "--self-test",
@@ -8,10 +8,7 @@
   "self_test": true,
   "arms": [
     "baseline",
-    "flashinfer",
-    "flashinfer_fp8kv",
     "mtp3",
-    "mtp3_fp8kv",
     "baseline_recheck"
   ],
   "config": {

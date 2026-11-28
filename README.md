@@ -5,10 +5,11 @@ findings, what the harness does, how to run it on the RTX Pro 6000 Blackwell, an
 with the numbers.
 
 **Status:** harness complete, unit-tested, and validated end-to-end against a mock server.
-First clean run on the target GPU is in (§12): baseline **153.2 tok/s**, FlashInfer + CUDA
-graphs already active, FP8 KV and n-gram rejected on measurement. MTP — the only lever that
-can reach 2.5× — was blocked by a vLLM 0.18.0 config bug; the backport is in and one targeted
-rerun is outstanding. Numbers marked *simulated* come from the mock server and are not
+Latest run on the target GPU is in (§12): baseline **159.8 tok/s** on TRITON + CUDA graphs,
+a same-config recheck at 159.9 with 100% identical output. FP8 KV cannot even build its
+FlashInfer kernel here, and n-gram is slower and diverges. MTP — the only lever that can
+reach 2.5× — was blocked by **two** vLLM 0.18.0 gaps (rope config, eagle image-token
+classification); both are backported and one targeted rerun is outstanding. Numbers marked *simulated* come from the mock server and are not
 measurements.
 
 ---
@@ -27,21 +28,25 @@ measurements.
 * **CUDA graphs are already on by default** (`--enforce-eager` defaults to false), so that
   part of the brief is a no-op unless something disabled it. The harness confirms it from the
   server log rather than trusting the flags, and includes an `eager` diagnostic arm.
-* **Measured baseline: 153.2 tok/s (6.5 ms/token)** with FlashInfer and CUDA graphs
-  already active. The 2.5× target is 383 tok/s, i.e. 2.6 ms/token.
-* **Pinning FlashInfer changed nothing measurable.** The baseline arm was already parsed as
-  `FLASHINFER`, so the +4% of the `flashinfer` arm is run-order/clock drift, not the pin.
-  A same-config `baseline_recheck` arm now runs last to quantify that noise floor.
-* **FP8 KV cache is measurably a dead end**: +0.1% over FlashInfer and 0/4 token-identical
-  quality prompts (86.7% prefix). Not worth the quality risk; drop it.
+* **Measured baseline: 159.8 tok/s (6.3 ms/token)** with CUDA graphs and vLLM's auto-selected
+  **TRITON** backend; a same-config recheck reproduced 159.9 with 100% identical output. The
+  2.5× target is 400 tok/s, i.e. 2.5 ms/token.
+* **The attention backend is a puzzle, not a free win.** vLLM 0.18 selects `TRITON` for this
+  hybrid model. A pinned `FLASHINFER` arm was 4% faster in the first environment, but on the
+  rebuilt environment the same flag crashes engine init. It is not used by default; a
+  `--full` diagnostic reproduces it.
+* **FP8 KV cache is out.** Run 1 measured +0.1%; on the current box the FP8 path selects
+  FlashInfer, whose JIT-compiled FP8 prefill kernel fails to build (ninja). It cannot run,
+  and it had no speed benefit to begin with.
 * **n-gram speculation is a dead end on this model**: 0.82× (slower, even at 32% acceptance)
   and 0/4 token-identical outputs. It is kept only as a `--full` negative result.
 * **The real lever is MTP**: it cuts the number of *target forwards* per output token.
-  At 6.5 ms/token, 2.5× needs a K=3 acceptance rate around 60%. The harness measures
+  At 6.3 ms/token, 2.5× needs a K=3 acceptance rate around 60%. The harness measures
   acceptance from vLLM's Prometheus counters, so the number falls out of the run.
-* **MTP was blocked by a vLLM 0.18.0 bug**, not by the graft: its Qwen3.5-MoE config passes
-  a list where transformers 5.2 expects a set (`TypeError: ... 'list' and 'set'`). vLLM
-  0.31.0 has the fix; `./run_bench.sh fix-mtp-config` backports it in place. Rerun pending.
+* **MTP was blocked by two vLLM 0.18.0 gaps**, not by the graft: (1) the Qwen3.5-MoE config
+  passes a list where transformers 5.2 expects a set, and (2) the spec-decode setup does not
+  recognise WeMM architectures and reads `config.image_token_index`, which WeMM does not have.
+  `./run_bench.sh fix-mtp-config` backports both. Rerun pending.
 
 ---
 
@@ -98,8 +103,16 @@ and transformers 5.2.0 then evaluates `list | {"partial_rotary_factor"}`, raisin
 `TypeError: unsupported operand type(s) for |: 'list' and 'set'`. vLLM 0.31.0 uses a **set**
 literal. The WeMM *target* is unaffected because the Tencent patch routes its config through
 its own class; the sidecar uses stock Qwen's config and hits it. `./run_bench.sh
-fix-mtp-config` applies the one-line backport (with a `.orig` backup and a config-load
-validation), and the run preflights it so MTP arms cannot silently fail again.
+fix-mtp-config` applies that patch plus a second one, both with `.orig` backups:
+
+**vLLM 0.18.0 also mis-classifies WeMM in its spec-decode setup.**
+`vllm/v1/spec_decode/eagle.py` checks the target architecture against a list of Qwen VL names
+and then falls through to `target_model.config.image_token_index`. WeMM's config exposes
+`image_token_id`, so every MTP arm died with
+`AttributeError: 'WeMMQwen3_5MoeConfig' object has no attribute 'image_token_index'`.
+The backport adds `WeMMVideoForConditionalGeneration` / `WeMMVideoMoeForConditionalGeneration`
+to that list so the correct `image_token_id` branch is used. The run preflights both patches
+so MTP arms cannot silently fail again.
 
 ### 1.3 Does the graft change quality?
 
@@ -168,19 +181,19 @@ evidence.
 
 ## 3. Why 2.5× has to come from MTP
 
-The clean run measured **153.2 tok/s, i.e. 6.5 ms/token** (baseline arm, 20 requests,
-TTFT 227 ms median, FlashInfer + CUDA graphs active). The 2.5× target is therefore
-383 tok/s, or 2.6 ms/token. What occupies the current 6.5 ms?
+The latest run measured **159.8 tok/s, i.e. 6.3 ms/token** (baseline, 20 requests, TTFT 202 ms
+median, CUDA graphs on, auto-selected TRITON backend). The 2.5× target is therefore
+**400 tok/s, or 2.5 ms/token**. What occupies the current 6.3 ms?
 
-* Active weights are ~3 B parameters → ~6 GB of BF16 reads per token. At 6.5 ms that is
-  ~920 GB/s, roughly half of the card's ~1.8 TB/s peak. Weight traffic matters here — the
+* Active weights are ~3 B parameters → ~6 GB of BF16 reads per token. At 6.3 ms that is
+  ~950 GB/s, roughly half of the card's ~1.8 TB/s peak. Weight traffic matters here — the
   22 ms/token premise in the brief was pessimistic — but it is still only part of the budget.
 * The remaining time is per-token overhead: 40 layers of MoE routing and expert gathers, GDN
-  kernels, launches. This is why CUDA graphs and FlashInfer matter, and why MTP — which
-  removes whole target forwards — is the only listed lever that can plausibly reach 2.5×.
+  kernels, launches. This is why CUDA graphs matter, and why MTP — which removes whole target
+  forwards — is the only listed lever that can plausibly reach 2.5×.
 * KV traffic is not the bottleneck: the 10 full-attention layers, 8k tokens, 2 KV heads ×
-  256 dims, bf16 ≈ 170 MB/token → ~26 GB/s at this speed. FP8 KV halves that, under 1% of
-  the total. The measurement agrees: FP8 KV added 0.09% over FlashInfer.
+  256 dims, bf16 ≈ 170 MB/token → ~27 GB/s at this speed. FP8 KV halves that, under 1% of
+  the total. Run 1 measured +0.1%.
 
 MTP attacks the dominant term: fewer target forwards. With target step time `T`, draft cost
 `d` per drafted token, acceptance `a`, and `K` drafts:
@@ -189,17 +202,17 @@ MTP attacks the dominant term: fewer target forwards. With target step time `T`,
 per_token_latency = (T + K*d) / (1 + a*K)
 ```
 
-At the measured `T = 6.5 ms` and `d = 0.3 ms` (one of 40 layers plus routing overhead):
+At the measured `T = 6.3 ms` and `d = 0.3 ms` (one of 40 layers plus routing overhead):
 
 | K | acceptance | ms/token | speedup |
 | ---: | ---: | ---: | ---: |
-| 3 | 0.50 | 2.96 | 2.20× |
-| 3 | 0.60 | 2.64 | 2.46× |
-| 3 | 0.70 | 2.39 | 2.72× |
-| 5 | 0.35 | 2.91 | 2.24× |
-| 5 | 0.45 | 2.46 | 2.64× |
+| 3 | 0.50 | 2.88 | 2.19× |
+| 3 | 0.60 | 2.57 | 2.45× |
+| 3 | 0.70 | 2.32 | 2.72× |
+| 5 | 0.35 | 2.83 | 2.23× |
+| 5 | 0.45 | 2.39 | 2.64× |
 
-So **~60% acceptance at K=3 is the threshold**, and the K sweep (`--full` runs K=3/5/7) plus
+So **~60% acceptance at K=3 is the threshold**, and the K sweep (`--full` runs K=1/5/7) plus
 the reported acceptance rate turns this into a measurement instead of a guess.
 
 The unknown is whether a head trained alongside the *base* Qwen model still agrees with the
@@ -208,25 +221,27 @@ bounded: bad acceptance just means a slow arm, never wrong output.
 
 ## 4. Arms
 
+Default suite (3 servers, ~20 min):
+
 | Arm | Extra flags | Question it answers | Measured |
 | --- | --- | --- | --- |
-| `baseline` | *(none)* | Out-of-the-box BF16, official recipe, TP=1 | 153.2 tok/s |
-| `flashinfer` | `--attention-backend FLASHINFER` | Is pinning FlashInfer worth anything on sm_120? | 159.6 (+4%, drift) |
-| `flashinfer_fp8kv` | `+ --kv-cache-dtype fp8` | Does FP8 KV help at all here? | 159.8, tokens drift |
-| `mtp3` | `flashinfer + --speculative-config {model,mtp,3}` | The main lever, K=3 | blocked → backport, rerun |
-| `mtp3_fp8kv` | `flashinfer + fp8 KV + MTP K=3` | The full listed optimisation set | blocked → backport, rerun |
-| `baseline_recheck` | identical to `baseline`, run last | Noise floor for clocks and greedy output | new, pending |
-| `ngram` | `flashinfer + n-gram spec K=4` | Zero-extra-weights speculation | 125.9 (0.82×), diverged |
-| `flashinfer_fp8kv_scaled` | `+ --calculate-kv-scales` | FP8 KV with runtime scales | `--full` |
-| `mtp5`, `mtp7` | `MTP K=5 / K=7` | Acceptance-vs-depth sweep | `--full` |
-| `single_seq` | `mtp3 + --max-num-seqs 1` | Single-user scheduling | `--full` |
-| `eager` | `--enforce-eager` | What CUDA graphs are worth | `--full` |
-| `custom` | `--custom-flags "…"` | Operator-supplied experiment | not claimed |
+| `baseline` | *(none)* | Out-of-the-box BF16, official recipe, TP=1 | **159.8 tok/s** |
+| `mtp3` | `--speculative-config {model,mtp,3}` | The main lever, K=3 | pending rerun |
+| `baseline_recheck` | identical to `baseline`, run last | Noise floor for clocks and greedy output | **159.9 (1.00×)**, 100% identical |
 
-The report no longer treats "not bit-identical" as a defect by itself: greedy output on this
-model is not bit-stable across server restarts, which the baseline-vs-FlashInfer comparison
-demonstrated (same backend, 2/4 identical, 99.7% prefix). Verdicts are now relative to the
-`baseline_recheck` noise floor, and a same-config rerun is part of the default suite.
+`--full` adds `mtp1`, `mtp5`, `mtp7`, `mtp3_fp8kv`, `single_seq`, `fp8kv`, `fp8kv_scaled`,
+`ngram` (negative result), `pin_flashinfer` (engine-init crash) and `eager` (graph
+diagnostic).
+
+Two methodology points that came out of the runs:
+
+* **No explicit attention backend by default.** vLLM auto-selects TRITON; the explicit
+  FLASHINFER pin was +4% in the first environment but crashes engine init on the rebuilt one.
+  If a custom arm passes the flag and the engine dies, the harness retries once without it.
+* **Quality is judged against a noise floor.** Greedy output is not bit-stable across server
+  restarts (observed noise floors 99.7%, 64.0%, and 100% on the latest run). The default
+  suite ends with `baseline_recheck`; the report compares full-output prefix and the first 64
+  tokens against it.
 
 ---
 
@@ -235,6 +250,12 @@ demonstrated (same backend, 2/4 identical, 99.7% prefix). Verdicts are now relat
 Prerequisites: the patched vLLM 0.18.0 environment from the WeMM repo (`patch/install.sh
 vllm 0.18.0`), FFmpeg, CUDA NPP (torchcodec links against it — see below), HF access,
 ~150 GB free disk, and the 35B BF16 checkpoint either cached or downloadable.
+
+Extract this harness **at its root** — the directory that contains `results/` (and your
+`mtp_head/` sidecar) — never inside a subdirectory such as `dist/`. The harness resolves the
+sidecar as `results/mtp_head` relative to its own location, so a copy in `dist/` silently has
+no MTP arms. `./run_bench.sh help` prints the build id; the current one is
+`[harness 1.1.0 / 2026-11-27-pin-fix]`.
 
 ### 5.1 First-time setup (once per machine)
 
@@ -352,10 +373,10 @@ stay inside one allocation for the whole suite (~1 h): request `--time=2:00:00`.
 # 1. build the MTP sidecar (~10 GB download from Qwen, ~3.7 GB on disk)
 ./run_bench.sh prep-mtp
 
-# 1b. one-time vLLM 0.18.0 backport so the MTP draft config can be constructed
+# 1b. one-time vLLM 0.18.0 backports (rope config + eagle image-token classification)
 ./run_bench.sh fix-mtp-config
 
-# 2. measure. ~45-75 min: 6 servers, each loading 67 GiB of BF16 weights
+# 2. measure. ~20 min for the default suite (3 servers), each loading 67 GiB of weights
 #    --port is a preference: if it is busy the harness logs the owner and moves
 #    to the next free port (--strict-port fails instead)
 ./run_bench.sh run
@@ -444,17 +465,19 @@ on.
 
 1. **Apply the MTP backport and rerun the MTP arms — they are the only path to 2.5×.**
    ```bash
-   ./run_bench.sh fix-mtp-config          # list -> set in vLLM's qwen3_5_moe.py
+   ./run_bench.sh fix-mtp-config          # applies both vLLM 0.18.0 backports
    ./run_bench.sh run --port 8010 --full --arms baseline,baseline_recheck,mtp3,mtp5,mtp7
    ```
    Look at the acceptance column first: `≥60%` at K=3 makes the arithmetic work; `<40%` means
    the grafted Qwen head did not transfer and weight quantisation (see item 5) or a WeMM-family
    draft model is the next lever.
-2. **Stop pinning FlashInfer and calling it a win.** The baseline was already `FLASHINFER`
-   with CUDA graphs; the +4% is drift. Use `baseline_recheck` (now in the default suite) as
-   the reference, and compare MTP against the mean of baseline/recheck.
-3. **Do not use FP8 KV here.** Measured: +0.09% over FlashInfer, 0/4 token-identical,
-   86.7% prefix. It is the only arm that can move tokens at all, and it buys nothing.
+2. **Never pin the attention backend on this build.** The baseline auto-selects TRITON with
+   CUDA graphs; the explicit `--attention-backend FLASHINFER` flag was +4% in the first
+   environment but crashed engine init on the rebuilt one. If a custom arm carries the flag
+   and the engine dies, the harness retries without it.
+3. **Do not use FP8 KV here.** Run 1 measured +0.1%; on the current box the FP8 attention path
+   selects FlashInfer and its JIT-compiled FP8 prefill kernel fails to build (ninja). Even if
+   it built, there is no speed to gain.
 4. **Do not use n-gram speculation here.** Measured 0.82× (slower despite 32% acceptance)
    and 0/4 token-identical (22.9% prefix). On this hybrid GDN stack it is both slower and
    wrong; it is kept only as a `--full` negative result.
@@ -507,6 +530,91 @@ Check the `Generated:` timestamp first. If it predates your latest run, you are 
 stale report: the harness deletes `report.md`/`summary.json` at the start of a run, so a
 missing report means the run did not reach the report stage (look for `ARM CRASHED` in the
 terminal output and the per-arm JSON/logs). Re-running is what produces a fresh one.
+
+#### `GPU is busy (gpu0 ... MiB used)` on a shared node
+
+The GPU in your allocation already hosts another process (commonly another user's job on nodes
+with MPS, where Slurm can share a physical GPU). BF16 WeMM needs about **78,000 MiB free**
+(69 GiB of weights + 3.7 GiB sidecar + KV/graphs); a 37 GiB neighbour leaves ~60 GiB, so it
+cannot fit. No flag fixes that — the weights alone exceed the free memory.
+
+**Do not kill a PID you do not own.** In order:
+
+1. If the process is yours, stop it and rerun.
+2. Wait for the other job — the harness can do the polling for you (it checks every 30 s and
+   starts as soon as the GPU is idle):
+   ```bash
+   srun --gres=gpu:1 --mem=128G --time=2:00:00 --pty ./run_bench.sh run --port 8010 \
+     --wait-gpu 3600 --quick --arms baseline,mtp3
+   ```
+   Note `--mem` is **host RAM**, not GPU memory, and MIG is disabled on this GPU, so there is
+   no smaller GPU slice to request: `--gres=gpu:1` is the only unit, and the 97,887 MiB card is
+   shared via MPS.
+3. Get another allocation/GPU. To see what your allocation really contains:
+   ```bash
+   srun --gres=gpu:1 --mem=8G --pty bash -lc      'nvidia-smi; echo CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES; nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv'
+   ```
+   If MPS is enabled node-wide, ask for a free node or exclusive GPU access; re-requesting
+   `--gres=gpu:1` may land on a free GPU.
+4. `--allow-busy-gpu` skips the check, but vLLM will OOM during weight loading next to a
+   37 GiB neighbour. It is only useful for small or quantised checkpoints.
+
+To see whether the other process belongs to a live job or is an orphan, check the node's
+queue; if `jtrentin` has no job on the node, the process leaked and only an admin (or that
+user) should clean it up:
+
+```bash
+squeue -w tiramisu -o "%u %i %J %M %b %N"
+squeue -u jtrentin
+```
+
+To find a node with a free GPU before submitting:
+
+```bash
+sinfo -o "%20N %10G %10m %20C %12P"
+squeue -o "%N %G %u %i" | column -t
+```
+
+`./run_bench.sh env` reports `gpu_memory_free_mib` and warns when it is below 78,000 MiB.
+
+#### `unknown arm(s): mtp3; known: baseline, flashinfer, flashinfer_fp8kv, baseline_recheck`
+
+Two things are wrong at once:
+
+* you are running a **stale copy** (the current build has `fp8kv`, no plain `flashinfer` arm;
+  check `./run_bench.sh help` for `[harness 1.1.0 / 2026-11-27-pin-fix]`), and
+* you are probably running from a subdirectory (e.g. `dist/`), where `results/mtp_head` does
+  not exist, so MTP arms are dropped.
+
+Extract the archive at the harness root, run `./run_bench.sh list-arms` (it marks MTP arms
+with `[needs sidecar: ...]` if the sidecar is missing), and verify with
+`ls results/mtp_head`. Explicitly requesting an MTP arm without a sidecar now fails with that
+path in the message instead of a generic "unknown arm".
+
+#### Every arm after `baseline` fails with `RuntimeError: Engine core initialization failed`
+
+Check whether those arms pass `--attention-backend FLASHINFER`. On the rebuilt environment
+that explicit pin crashed engine init while the auto-selected baseline (TRITON) ran normally.
+The default arms no longer pin it; `./run_bench.sh list-arms` should show no `flashinfer` arm.
+If a custom arm passes a backend and the engine dies, the harness retries once without it and
+records `fallback` in the arm JSON. The report's failed-arm section prints the exception
+lines (not just the vLLM wrapper), so the root cause is visible in `results/report.md`.
+
+#### MTP arm fails with `AttributeError: ... 'image_token_index'`
+
+vLLM 0.18.0's `v1/spec_decode/eagle.py` does not recognise WeMM architectures and falls
+through to `target_model.config.image_token_index`; WeMM exposes `image_token_id`. The second
+backport in `./run_bench.sh fix-mtp-config` adds the WeMM names to the Qwen list. Verify with:
+
+```bash
+python -m bench.fix_vllm_config --check   # both lines must say fixed
+```
+
+#### `fp8kv` arm fails with `Ninja build failed` in the FlashInfer cache
+
+The FP8 KV path selects FlashInfer and JIT-compiles an FP8 prefill kernel
+(`head_dim_qk_256`, `kv_e4m3`) that fails to build on this box. FP8 KV measured +0.1% anyway,
+so it is not in the default suite; `fp8kv` is a `--full`-only negative result.
 
 #### MTP arm fails with `TypeError: unsupported operand type(s) for |: 'list' and 'set'`
 
@@ -652,35 +760,28 @@ construction) looks like this:
 
 ```
 baseline             45.4 tok/s   1.00x
-flashinfer           47.5 tok/s   1.05x   100% exact
-flashinfer_fp8kv     48.5 tok/s   1.07x   100% exact
+baseline_recheck     45.4 tok/s   1.00x   100% exact
 mtp3                 81.7 tok/s   1.80x   100% exact   (72% acceptance)
-mtp3_fp8kv           83.1 tok/s   1.83x   100% exact
-ngram                49.9 tok/s   1.10x   100% exact
 ```
 
-Treat only the *shape* of that table as meaningful.
-
-Unit test for the sidecar builder (works without a GPU, needs torch + safetensors):
-
-```bash
-python -m unittest tests.test_mtp_builder -v
-```
+Treat only the *shape* of that table as meaningful. The real numbers are in §12.
 
 ---
 
 ## 11. Open questions / what I need back
 
-Done and confirmed on the target GPU: FlashInfer is active on sm_120 (both the auto-selected
-baseline and the pinned arm report `backend=FLASHINFER`), CUDA graphs are captured, and the
-BF16 checkpoint loads and serves at 153 tok/s.
+Done and confirmed on the target GPU: the BF16 checkpoint serves at **159.8 tok/s** with CUDA
+graphs, and a same-config recheck reproduced it at 159.9 with identical output. vLLM
+auto-selects TRITON; the explicit FlashInfer pin is not usable on this build.
 
-Still open: whether the grafted Qwen MTP head gives usable acceptance on post-trained WeMM.
-That needs the backport and one targeted rerun:
+The one open question is whether the grafted Qwen MTP head gives usable acceptance on
+post-trained WeMM. Both vLLM blockers are now backported, so this is one short run:
 
 ```bash
 ./run_bench.sh fix-mtp-config
-./run_bench.sh run --port 8010 --full --arms baseline,baseline_recheck,mtp3,mtp5,mtp7
+./run_bench.sh run --port 8010 --quick --arms baseline,mtp3     # ~10 min smoke
+./run_bench.sh run --port 8010 --full \
+  --arms baseline,baseline_recheck,mtp3,mtp5,mtp7                # acceptance sweep
 ```
 
 Send `results/report.md` + `results/summary.json` afterwards (or just the arms table). If an
@@ -690,37 +791,43 @@ MTP arm fails, `results/logs/mtp3.log` is the file to send.
 
 ## 12. Results
 
-First clean run on **NVIDIA RTX PRO 6000 Blackwell Server Edition** (97,887 MiB, driver
-615.71.10, compute 12.0), vLLM 0.18.0, torch 2.10.0+cu129:
+Target GPU: **NVIDIA RTX PRO 6000 Blackwell Server Edition** (97,887 MiB, driver 615.71.10,
+compute 12.0), vLLM 0.18.0, torch 2.10.0+cu129, FlashInfer 0.6.6, transformers 5.2.0.
+
+### Latest run (2026-11-28 03:37 UTC)
 
 | Arm | Decode TPS | Speedup | Exact-out | Notes |
 | --- | ---: | ---: | ---: | --- |
-| `baseline` | **153.2** | 1.00× | reference | FLASHINFER + CUDA graphs already active |
-| `flashinfer` | 159.6 | 1.04× | 2/4 (99.7% prefix) | same backend as baseline → drift, not the pin |
-| `flashinfer_fp8kv` | 159.8 | 1.04× | 0/4 (86.7% prefix) | +0.09% over FlashInfer; tokens moved |
-| `mtp3` | — | — | — | failed: vLLM config bug, backport ready, rerun pending |
+| `baseline` | **159.8** | 1.00× | reference | TRITON + CUDA graphs |
+| `baseline_recheck` | 159.9 | 1.00× | 4/4 (100%) | clocks stable, output identical |
+| `fp8kv` | — | — | — | FlashInfer FP8 prefill kernel fails to build (ninja) |
+| `mtp3` | — | — | — | `image_token_index` vLLM bug, backported, rerun pending |
 | `mtp3_fp8kv` | — | — | — | same |
-| `ngram` | 125.9 | **0.82×** | 0/4 (22.9% prefix) | slower at 32% acceptance; outputs diverged |
 
-**Target of 2.5× (383 tok/s): not met, and not yet testable** — the only lever that can reach
-it (MTP) was blocked by the vLLM config bug. What this run does establish:
+### Earlier runs
 
-1. **The baseline is much faster than the brief assumed.** 6.5 ms/token, not 22 ms, with
-   FlashInfer and CUDA graphs already on. The brief's CUDA-graph/FlashInfer items are
-   therefore already satisfied by stock vLLM on this GPU.
-2. **FP8 KV is not worth it here.** +0.09% over FlashInfer and a visible token drift
-   (86.7% prefix, 0/4 identical). It was the one requested optimisation that can change
-   output, and it buys nothing.
-3. **n-gram speculation is not a fallback on this model.** 0.82× despite 32% acceptance and
-   0/4 identical outputs; the hybrid GDN state handling in vLLM's n-gram path looks
-   unreliable here.
-4. **Greedy output is not bit-stable across server restarts.** Baseline vs pinned FlashInfer
-   (identical backend, identical flags in effect) differed on 2/4 prompts at 99.7% prefix.
-   That is why the report now uses a `baseline_recheck` noise floor instead of treating any
-   difference as a regression.
-5. **The MTP blocker was a real vLLM 0.18.0 bug**, reproducible from the traceback alone
-   (list vs set in `qwen3_5_moe.py`), fixed in 0.31.0 and backported by
-   `./run_bench.sh fix-mtp-config`.
+| Run | Baseline | Finding |
+| --- | ---: | --- |
+| run 1 (first env) | 153.2 | pinned FlashInfer +4.2%, FP8 KV +0.1%, n-gram 0.82×; MTP hit the rope list/set bug |
+| run 2 (rebuilt env) | 153.4 | explicit FlashInfer pin crashed engine init; MTP arms all carried it |
 
-The next run (baseline + recheck + MTP K=3/5/7) is the one that decides the 2.5× claim. At
-60% acceptance the arithmetic says ~2.5×; at 40% it says ~2.0×.
+### What the measurements establish
+
+1. **Decode is 159.8 tok/s (6.3 ms/token).** The brief's 22 ms/token premise was pessimistic;
+   2.5× means 400 tok/s (2.5 ms/token).
+2. **Clocks and greedy output were stable in the latest run** — 159.8 vs 159.9 and 4/4
+   identical quality outputs. Earlier pairs showed noise floors of 99.7% and 64.0%, so the
+   report still reports both prefix and first-64-token agreement.
+3. **The attention backend is unresolved, not solved.** vLLM auto-selects TRITON. Pinning
+   FlashInfer was ~4% faster in run 1 but crashes engine init in the rebuilt environment.
+   The pin is not used; a `--full` diagnostic can revisit it if the crash is ever understood.
+4. **FP8 KV is unusable here.** Run 1: +0.1%. Current box: the FP8 path selects FlashInfer and
+   the JIT-compiled FP8 prefill kernel fails to build. Removed from the default suite.
+5. **n-gram is a negative result**: 0.82× at 32% acceptance and gross output divergence.
+6. **MTP has never actually started yet.** Two independent vLLM 0.18.0 gaps blocked it — the
+   rope list/set bug and the eagle `image_token_index` classification — both now backported by
+   `./run_bench.sh fix-mtp-config`. The acceptance rate from the next run decides the 2.5×
+   claim: ≥60% at K=3 → ~2.45×; ~40% → ~2.0×.
+
+Archived reports: `results/archive/2026-11-27/`, `results/archive/2026-11-27-run2/`, and
+`results/archive/2026-11-28/` for the latest run.

@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-11-27T06:05:09+00:00",
+  "generated_at": "2026-11-28T03:37:35+00:00",
   "simulated": false,
-  "baseline_tps": 153.18103583800416,
+  "baseline_tps": 159.80170884717347,
   "target_speedup": 2.5,
-  "best_arm": "flashinfer_fp8kv",
-  "best_speedup": 1.0428885399045165,
+  "best_arm": "baseline_recheck",
+  "best_speedup": 1.00087559993917,
   "target_met": false,
   "arms": [
     {
@@ -12,11 +12,11 @@
       "label": "Out-of-the-box BF16 (official recipe, TP=1)",
       "kind": "baseline",
       "status": "ok",
-      "decode_tps_median": 153.18103583800416,
+      "decode_tps_median": 159.80170884717347,
       "speedup_vs_baseline": 1.0,
-      "decode_tps_short": 153.06002111240392,
-      "decode_tps_long": 153.22816180715827,
-      "ttft_s_median": 0.22717109305085614,
+      "decode_tps_short": 159.04046594460237,
+      "decode_tps_long": 159.84272296724117,
+      "ttft_s_median": 0.2016801800000394,
       "output_tokens_median": 256.0,
       "prompt_tokens_median": 1852.0,
       "acceptance_rate": null,
@@ -27,46 +27,46 @@
       "error": null
     },
     {
-      "arm": "flashinfer",
-      "label": "+ FlashInfer pinned",
+      "arm": "baseline_recheck",
+      "label": "Baseline re-run (drift / noise floor)",
       "kind": "opt",
       "status": "ok",
-      "decode_tps_median": 159.61234688001642,
-      "speedup_vs_baseline": 1.0419850342885373,
-      "decode_tps_short": 160.38651499255323,
-      "decode_tps_long": 159.54281037559565,
-      "ttft_s_median": 0.20421885751420632,
+      "decode_tps_median": 159.94163121371935,
+      "speedup_vs_baseline": 1.00087559993917,
+      "decode_tps_short": 160.5230767204049,
+      "decode_tps_long": 159.85457782078737,
+      "ttft_s_median": 0.2021407635002106,
       "output_tokens_median": 256.0,
       "prompt_tokens_median": 1852.0,
       "acceptance_rate": null,
       "mean_acceptance_length": null,
-      "quality_exact_rate": 0.5,
+      "quality_exact_rate": 1.0,
       "requests_ok": 20,
       "requests_total": 20,
       "error": null
     },
     {
-      "arm": "flashinfer_fp8kv",
-      "label": "+ FlashInfer + FP8 KV cache",
+      "arm": "fp8kv",
+      "label": "+ FP8 KV cache",
       "kind": "opt",
-      "status": "ok",
-      "decode_tps_median": 159.75074680615757,
-      "speedup_vs_baseline": 1.0428885399045165,
-      "decode_tps_short": 159.70401728712966,
-      "decode_tps_long": 159.75074680615757,
-      "ttft_s_median": 0.19801880902377889,
-      "output_tokens_median": 256.0,
-      "prompt_tokens_median": 1852.0,
+      "status": "failed",
+      "decode_tps_median": null,
+      "speedup_vs_baseline": null,
+      "decode_tps_short": null,
+      "decode_tps_long": null,
+      "ttft_s_median": null,
+      "output_tokens_median": null,
+      "prompt_tokens_median": null,
       "acceptance_rate": null,
       "mean_acceptance_length": null,
-      "quality_exact_rate": 0.0,
-      "requests_ok": 20,
-      "requests_total": 20,
-      "error": null
+      "quality_exact_rate": null,
+      "requests_ok": 0,
+      "requests_total": 0,
+      "error": "server exited during startup with code 1.\n--- error excerpt ---\n(EngineCore pid=51274) ERROR 11-27 22:32:06 [core.py:1099]   File \"/users/d2acosta/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py\", line 571, in run\n(EngineCore pid=51274) ERROR 11-27 22:32:06 [core.py:1099]     raise CalledProcessError(retcode, process.args,\n(EngineCore pid=51274) ERROR 11-27 22:32:06 [core.py:1099] subprocess.CalledProcessError: Command '['ninja', '-v', '-C', '/users/d2acosta/.cache/flashinfer/0.6.6/120a/cached_ops/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False', '-f', '/users/d2acosta/.cache/flashinfer/0.6.6/120a/cached_ops/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False/build.ninja']' returned non-zero exit status 1.\n(EngineCore pid=51274) ERROR 11-27 22:32:06 [core.py:1099]\n(EngineCore pid=51274) ERROR 11-27 22:32:06 [core.py:1099] The above exception was the direct cause of the following exception:\n(EngineCore pid=51274) ERROR 11-27 22:32:06 [core.py:1099]   File \"/users/d2acosta/Projects/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py\", line 344, in run_ninja\n(EngineCore pid=51274) ERROR 11-27 22:32:06 [core.py:1099]     raise RuntimeError(msg) from e\n(EngineCore pid=51274) ERROR 11-27 22:32:06 [core.py:1099] RuntimeError: Ninja build failed. Ninja output:\n(EngineCore pid=51274) ERROR 11-27 22:32:06 [core.py:1099] ninja: Entering directory `/users/d2acosta/.cache/flashinfer/0.6.6/120a/cached_ops/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False'\n(EngineCore pid=51274) ERROR 11-27 22:32:06 [core.py:1099] [1/11] /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile --dependency-output /users/d2acosta/.cache/flashinfer/0.6.6/120a/cached_ops/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False/batch_prefill_ragged_kernel_mask_3.cuda.o.d -DPy_LIMITED_API=0x03090000 -D_GLIBCXX_USE_CXX11_ABI=1 -isystem /users/d2acosta/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/include/python3.12 -isystem /usr/local/cuda/include -isystem /usr/local/cuda/include/cccl -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/tvm_ffi/include -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/tvm_ffi/include -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/data/include -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/data/csrc -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/data/cutlass/include -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/data/cutlass/tools/util/include -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/data/spdlog/include --compiler-options=-fPIC --expt-relaxed-constexpr -static-global-template-stub=false -gencode=arch=compute_120a,code=sm_120a -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -std=c++17 --threads=1 -use_fast_math -DFLASHINFER_ENABLE_F16 -DFLASHINFER_ENABLE_BF16 -DFLASHINFER_ENABLE_FP8_E4M3 -DFLASHINFER_ENABLE_FP8_E5M2 -DNDEBUG -O3 -c /users/d2acosta/.cache/flashinfer/0.6.6/120a/generated/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False/batch_prefill_ragged_kernel_mask_3.cu -o /users/d2acosta/.cache/flashinfer/0.6.6/120a/cached_ops/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False/batch_prefill_ragged_kernel_mask_3.cuda.o\n(EngineCore pid=51274)   File \"/users/d2acosta/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py\", line 571, in run\n(EngineCore pid=51274)     raise CalledProcessError(retcode, process.args,\n(EngineCore pid=51274) subprocess.CalledProcessError: Command '['ninja', '-v', '-C', '/users/d2acosta/.cache/flashinfer/0.6.6/120a/cached_ops/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False', '-f', '/users/d2acosta/.cache/flashinfer/0.6.6/120a/cached_ops/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False/build.ninja']' returned non-zero exit status 1.\n(EngineCore pid=51274)\n(EngineCore pid=51274) The above exception was the direct cause of the following exception:\n(EngineCore pid=51274)   File \"/users/d2acosta/Projects/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py\", line 344, in run_ninja\n(EngineCore pid=51274)     raise RuntimeError(msg) from e\n(EngineCore pid=51274) RuntimeError: Ninja build failed. Ninja output:\n(EngineCore pid=51274) ninja: Entering directory `/users/d2acosta/.cache/flashinfer/0.6.6/120a/cached_ops/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False'\n(EngineCore pid=51274) [1/11] /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile --dependency-output /users/d2acosta/.cache/flashinfer/0.6.6/120a/cached_ops/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False/batch_prefill_ragged_kernel_mask_3.cuda.o.d -DPy_LIMITED_API=0x03090000 -D_GLIBCXX_USE_CXX11_ABI=1 -isystem /users/d2acosta/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/include/python3.12 -isystem /usr/local/cuda/include -isystem /usr/local/cuda/include/cccl -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/tvm_ffi/include -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/tvm_ffi/include -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/data/include -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/data/csrc -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/data/cutlass/include -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/data/cutlass/tools/util/include -isystem /users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/flashinfer/data/spdlog/include --compiler-options=-fPIC --expt-relaxed-constexpr -static-global-template-stub=false -gencode=arch=compute_120a,code=sm_120a -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -std=c++17 --threads=1 -use_fast_math -DFLASHINFER_ENABLE_F16 -DFLASHINFER_ENABLE_BF16 -DFLASHINFER_ENABLE_FP8_E4M3 -DFLASHINFER_ENABLE_FP8_E5M2 -DNDEBUG -O3 -c /users/d2acosta/.cache/flashinfer/0.6.6/120a/generated/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False/batch_prefill_ragged_kernel_mask_3.cu -o /users/d2acosta/.cache/flashinfer/0.6.6/120a/cached_ops/batch_prefill_with_kv_cache_dtype_q_bf16_dtype_kv_e4m3_dtype_o_bf16_dtype_idx_i32_head_dim_qk_256_head_dim_vo_256_posenc_0_use_swa_False_use_logits_cap_False_f16qk_False/batch_prefill_ragged_kernel_mask_3.cuda.o\n(APIServer pid=51159)   File \"/users/d2acosta/Projects/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/v1/engine/utils.py\", line 1031, in wait_for_engine_startup\n(APIServer pid=51159)     raise RuntimeError(\n(APIServer pid=51159) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
     },
     {
       "arm": "mtp3",
-      "label": "+ FlashInfer + MTP K=3",
+      "label": "+ MTP K=3 (grafted Qwen head)",
       "kind": "opt",
       "status": "failed",
       "decode_tps_median": null,
@@ -81,11 +81,11 @@
       "quality_exact_rate": null,
       "requests_ok": 0,
       "requests_total": 0,
-      "error": "server exited during startup with code 1.\n--- log tail ---\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/uvloop/__init__.py\", line 48, in wrapper\n(APIServer pid=163008)     return await main\n(APIServer pid=163008)            ^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py\", line 656, in run_server\n(APIServer pid=163008)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py\", line 670, in run_server_worker\n(APIServer pid=163008)     async with build_async_engine_client(\n(APIServer pid=163008)                ^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/contextlib.py\", line 210, in __aenter__\n(APIServer pid=163008)     return await anext(self.gen)\n(APIServer pid=163008)            ^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py\", line 103, in build_async_engine_client\n(APIServer pid=163008)     async with build_async_engine_client_from_engine_args(\n(APIServer pid=163008)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/contextlib.py\", line 210, in __aenter__\n(APIServer pid=163008)     return await anext(self.gen)\n(APIServer pid=163008)            ^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py\", line 129, in build_async_engine_client_from_engine_args\n(APIServer pid=163008)     vllm_config = engine_args.create_engine_config(usage_context=usage_context)\n(APIServer pid=163008)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/engine/arg_utils.py\", line 1762, in create_engine_config\n(APIServer pid=163008)     speculative_config = self.create_speculative_config(\n(APIServer pid=163008)                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/engine/arg_utils.py\", line 1474, in create_speculative_config\n(APIServer pid=163008)     return SpeculativeConfig(**self.speculative_config)\n(APIServer pid=163008)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/pydantic/_internal/_dataclasses.py\", line 121, in __init__\n(APIServer pid=163008)     s.__pydantic_validator__.validate_python(ArgsKwargs(args, kwargs), self_instance=s)\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/config/speculative.py\", line 458, in __post_init__\n(APIServer pid=163008)     self.draft_model_config = ModelConfig(\n(APIServer pid=163008)                               ^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/pydantic/_internal/_dataclasses.py\", line 121, in __init__\n(APIServer pid=163008)     s.__pydantic_validator__.validate_python(ArgsKwargs(args, kwargs), self_instance=s)\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/config/model.py\", line 476, in __post_init__\n(APIServer pid=163008)     hf_config = get_config(\n(APIServer pid=163008)                 ^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/transformers_utils/config.py\", line 679, in get_config\n(APIServer pid=163008)     config_dict, config = config_parser.parse(\n(APIServer pid=163008)                           ^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/transformers_utils/config.py\", line 196, in parse\n(APIServer pid=163008)     config = config_class.from_pretrained(\n(APIServer pid=163008)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/transformers/configuration_utils.py\", line 552, in from_pretrained\n(APIServer pid=163008)     return cls.from_dict(config_dict, **kwargs)\n(APIServer pid=163008)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/transformers/configuration_utils.py\", line 714, in from_dict\n(APIServer pid=163008)     config = cls(**config_dict)\n(APIServer pid=163008)              ^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/transformers_utils/configs/qwen3_5_moe.py\", line 192, in __init__\n(APIServer pid=163008)     self.text_config = self.sub_configs[\"text_config\"](**text_config)\n(APIServer pid=163008)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/transformers_utils/configs/qwen3_5_moe.py\", line 121, in __init__\n(APIServer pid=163008)     super().__init__(**kwargs)\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/transformers/configuration_utils.py\", line 219, in __init__\n(APIServer pid=163008)     kwargs = self.convert_rope_params_to_dict(\n(APIServer pid=163008)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163008)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/transformers/modeling_rope_utils.py\", line 651, in convert_rope_params_to_dict\n(APIServer pid=163008)     ignore_keys_at_rope_validation = ignore_keys_at_rope_validation | {\"partial_rotary_factor\"}\n(APIServer pid=163008)                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~\n(APIServer pid=163008) TypeError: unsupported operand type(s) for |: 'list' and 'set'"
+      "error": "server exited during startup with code 1.\n--- error excerpt ---\n(EngineCore pid=51760) ERROR 11-27 22:33:29 [core.py:1099]     return super().__getattribute__(key)\n(EngineCore pid=51760) ERROR 11-27 22:33:29 [core.py:1099]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(EngineCore pid=51760) ERROR 11-27 22:33:29 [core.py:1099] AttributeError: 'WeMMQwen3_5MoeConfig' object has no attribute 'image_token_index'. Did you mean: 'image_token_id'?\n(EngineCore pid=51760) Process EngineCore:\n(EngineCore pid=51760) Traceback (most recent call last):\n(EngineCore pid=51760)     return super().__getattribute__(key)\n(EngineCore pid=51760)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(EngineCore pid=51760) AttributeError: 'WeMMQwen3_5MoeConfig' object has no attribute 'image_token_index'. Did you mean: 'image_token_id'?\n[rank0]:[W1127 22:33:30.992932694 ProcessGroupNCCL.cpp:1553] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())\n(APIServer pid=51655) Traceback (most recent call last):\n(APIServer pid=51655)   File \"/users/d2acosta/Projects/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/v1/engine/utils.py\", line 1031, in wait_for_engine_startup\n(APIServer pid=51655)     raise RuntimeError(\n(APIServer pid=51655) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
     },
     {
       "arm": "mtp3_fp8kv",
-      "label": "+ FlashInfer + FP8 KV + MTP K=3",
+      "label": "+ MTP K=3 + FP8 KV",
       "kind": "opt",
       "status": "failed",
       "decode_tps_median": null,
@@ -100,67 +100,28 @@
       "quality_exact_rate": null,
       "requests_ok": 0,
       "requests_total": 0,
-      "error": "server exited during startup with code 1.\n--- log tail ---\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/uvloop/__init__.py\", line 48, in wrapper\n(APIServer pid=163176)     return await main\n(APIServer pid=163176)            ^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py\", line 656, in run_server\n(APIServer pid=163176)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py\", line 670, in run_server_worker\n(APIServer pid=163176)     async with build_async_engine_client(\n(APIServer pid=163176)                ^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/contextlib.py\", line 210, in __aenter__\n(APIServer pid=163176)     return await anext(self.gen)\n(APIServer pid=163176)            ^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py\", line 103, in build_async_engine_client\n(APIServer pid=163176)     async with build_async_engine_client_from_engine_args(\n(APIServer pid=163176)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/contextlib.py\", line 210, in __aenter__\n(APIServer pid=163176)     return await anext(self.gen)\n(APIServer pid=163176)            ^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py\", line 129, in build_async_engine_client_from_engine_args\n(APIServer pid=163176)     vllm_config = engine_args.create_engine_config(usage_context=usage_context)\n(APIServer pid=163176)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/engine/arg_utils.py\", line 1762, in create_engine_config\n(APIServer pid=163176)     speculative_config = self.create_speculative_config(\n(APIServer pid=163176)                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/engine/arg_utils.py\", line 1474, in create_speculative_config\n(APIServer pid=163176)     return SpeculativeConfig(**self.speculative_config)\n(APIServer pid=163176)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/pydantic/_internal/_dataclasses.py\", line 121, in __init__\n(APIServer pid=163176)     s.__pydantic_validator__.validate_python(ArgsKwargs(args, kwargs), self_instance=s)\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/config/speculative.py\", line 458, in __post_init__\n(APIServer pid=163176)     self.draft_model_config = ModelConfig(\n(APIServer pid=163176)                               ^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/pydantic/_internal/_dataclasses.py\", line 121, in __init__\n(APIServer pid=163176)     s.__pydantic_validator__.validate_python(ArgsKwargs(args, kwargs), self_instance=s)\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/config/model.py\", line 476, in __post_init__\n(APIServer pid=163176)     hf_config = get_config(\n(APIServer pid=163176)                 ^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/transformers_utils/config.py\", line 679, in get_config\n(APIServer pid=163176)     config_dict, config = config_parser.parse(\n(APIServer pid=163176)                           ^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/transformers_utils/config.py\", line 196, in parse\n(APIServer pid=163176)     config = config_class.from_pretrained(\n(APIServer pid=163176)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/transformers/configuration_utils.py\", line 552, in from_pretrained\n(APIServer pid=163176)     return cls.from_dict(config_dict, **kwargs)\n(APIServer pid=163176)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/transformers/configuration_utils.py\", line 714, in from_dict\n(APIServer pid=163176)     config = cls(**config_dict)\n(APIServer pid=163176)              ^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/transformers_utils/configs/qwen3_5_moe.py\", line 192, in __init__\n(APIServer pid=163176)     self.text_config = self.sub_configs[\"text_config\"](**text_config)\n(APIServer pid=163176)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/transformers_utils/configs/qwen3_5_moe.py\", line 121, in __init__\n(APIServer pid=163176)     super().__init__(**kwargs)\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/transformers/configuration_utils.py\", line 219, in __init__\n(APIServer pid=163176)     kwargs = self.convert_rope_params_to_dict(\n(APIServer pid=163176)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(APIServer pid=163176)   File \"/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/transformers/modeling_rope_utils.py\", line 651, in convert_rope_params_to_dict\n(APIServer pid=163176)     ignore_keys_at_rope_validation = ignore_keys_at_rope_validation | {\"partial_rotary_factor\"}\n(APIServer pid=163176)                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~\n(APIServer pid=163176) TypeError: unsupported operand type(s) for |: 'list' and 'set'"
-    },
-    {
-      "arm": "ngram",
-      "label": "+ FlashInfer + n-gram speculation (K=4)",
-      "kind": "opt",
-      "status": "ok",
-      "decode_tps_median": 125.93279895663014,
-      "speedup_vs_baseline": 0.8221174264013317,
-      "decode_tps_short": 124.96004444234116,
-      "decode_tps_long": 156.93421174580322,
-      "ttft_s_median": 0.18032511993078515,
-      "output_tokens_median": 256.0,
-      "prompt_tokens_median": 1852.0,
-      "acceptance_rate": 0.3229166666666667,
-      "mean_acceptance_length": 2.291666666666667,
-      "quality_exact_rate": 0.0,
-      "requests_ok": 20,
-      "requests_total": 20,
-      "error": null
+      "error": "server exited during startup with code 1.\n--- error excerpt ---\n(EngineCore pid=52102) ERROR 11-27 22:34:37 [core.py:1099]     return super().__getattribute__(key)\n(EngineCore pid=52102) ERROR 11-27 22:34:37 [core.py:1099]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(EngineCore pid=52102) ERROR 11-27 22:34:37 [core.py:1099] AttributeError: 'WeMMQwen3_5MoeConfig' object has no attribute 'image_token_index'. Did you mean: 'image_token_id'?\n(EngineCore pid=52102) Process EngineCore:\n(EngineCore pid=52102) Traceback (most recent call last):\n(EngineCore pid=52102)     return super().__getattribute__(key)\n(EngineCore pid=52102)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n(EngineCore pid=52102) AttributeError: 'WeMMQwen3_5MoeConfig' object has no attribute 'image_token_index'. Did you mean: 'image_token_id'?\n[rank0]:[W1127 22:34:38.016782499 ProcessGroupNCCL.cpp:1553] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())\n(APIServer pid=51988) Traceback (most recent call last):\n(APIServer pid=51988)   File \"/users/d2acosta/Projects/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm/v1/engine/utils.py\", line 1031, in wait_for_engine_startup\n(APIServer pid=51988)     raise RuntimeError(\n(APIServer pid=51988) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
     }
   ],
   "quality": [
     {
-      "arm": "flashinfer",
+      "arm": "baseline_recheck",
       "compared": 4,
-      "exact": 2,
-      "exact_rate": 0.5,
-      "token_prefix_ratio_median": 0.9973958333333333,
-      "divergences": [
-        {
-          "prompt_id": "q_math",
-          "arm_text": "To find the end time of the meeting, we add the duration to the start time.\n\n**Arithmetic:**\n\n1.  **Start Time:** 09:45\n2.  **Duration:** 2 hours and 35 minutes\n\n**Step 1: Add the hours**\n$$09:45 + 2 \\text{ hours} = 11:4",
-          "baseline_text": "To find the end time of the meeting, we add the duration to the start time.\n\n**Arithmetic:**\n\n1.  **Start Time:** 09:45\n2.  **Duration:** 2 hours and 35 minutes\n\n**Step 1: Add the hours**\n$$09:45 + 2 \\text{ hours} = 11:4"
-        },
-        {
-          "prompt_id": "q_reasoning",
-          "arm_text": "Here is the step-by-step computation and analysis.\n\n### 1. Calculate the Total Travel Time\n\nFirst, determine the duration of the journey by subtracting the departure time from the arrival time.\n\n*   **Departure:** 14:10\n",
-          "baseline_text": "Here is the step-by-step computation and analysis.\n\n### 1. Calculate the Total Travel Time\n\nFirst, determine the duration of the journey by subtracting the departure time from the arrival time.\n\n*   **Departure Time:** 1"
-        }
-      ],
-      "claim": "exact"
+      "exact": 4,
+      "exact_rate": 1.0,
+      "first64_matches": 4,
+      "token_prefix_ratio_median": 1.0,
+      "divergences": [],
+      "claim": "baseline"
     },
     {
-      "arm": "flashinfer_fp8kv",
-      "compared": 4,
+      "arm": "fp8kv",
+      "compared": 0,
       "exact": 0,
-      "exact_rate": 0.0,
-      "token_prefix_ratio_median": 0.8671875,
-      "divergences": [
-        {
-          "prompt_id": "q_math",
-          "arm_text": "To find the end time of the meeting, we add the duration to the start time.\n\n**Arithmetic:**\n\n1.  **Start Time:** 09:45\n2.  **Duration:** 2 hours and 35 minutes\n\n**Step 1: Add the hours**\n$$09:45 + 2 \\text{ hours} = 11:4",
-          "baseline_text": "To find the end time of the meeting, we add the duration to the start time.\n\n**Arithmetic:**\n\n1.  **Start Time:** 09:45\n2.  **Duration:** 2 hours and 35 minutes\n\n**Step 1: Add the hours**\n$$09:45 + 2 \\text{ hours} = 11:4"
-        },
-        {
-          "prompt_id": "q_factual",
-          "arm_text": "Here are the answers to your questions regarding the primary colours of light:\n\n**1. The Three Primary Colours of Light**\nThe three primary colours of light (additive colour model) are:\n*   **Red**\n*   **Green**\n*   **Bl",
-          "baseline_text": "Here are the answers to your questions regarding the primary colours of light:\n\n**1. The Three Primary Colours of Light**\nThe three primary colours of light (additive colour model) are:\n*   **Red**\n*   **Green**\n*   **Bl"
-        }
-      ],
+      "exact_rate": null,
+      "first64_matches": 0,
+      "token_prefix_ratio_median": null,
+      "divergences": [],
       "claim": "likely"
     },
     {
@@ -168,6 +129,7 @@
       "compared": 0,
       "exact": 0,
       "exact_rate": null,
+      "first64_matches": 0,
       "token_prefix_ratio_median": null,
       "divergences": [],
       "claim": "exact"
@@ -177,34 +139,16 @@
       "compared": 0,
       "exact": 0,
       "exact_rate": null,
+      "first64_matches": 0,
       "token_prefix_ratio_median": null,
       "divergences": [],
       "claim": "likely"
-    },
-    {
-      "arm": "ngram",
-      "compared": 4,
-      "exact": 0,
-      "exact_rate": 0.0,
-      "token_prefix_ratio_median": 0.22916666666666669,
-      "divergences": [
-        {
-          "prompt_id": "q_math",
-          "arm_text": "To find the end time of the meeting, we add the duration to the start time.\n\n**Arithmetic:**\n\n1.  **Start Time:** 09:45\n2.  **Add the hours:\n    $$09:45 + 2 = 11$$\n    Current time: 11:45 (11:45)\n3.  Add the minutes:\n   ",
-          "baseline_text": "To find the end time of the meeting, we add the duration to the start time.\n\n**Arithmetic:**\n\n1.  **Start Time:** 09:45\n2.  **Duration:** 2 hours and 35 minutes\n\n**Step 1: Add the hours**\n$$09:45 + 2 \\text{ hours} = 11:4"
-        },
-        {
-          "prompt_id": "q_factual",
-          "arm_text": "Here are the answers to your questions regarding the primary colours of light:\n\n1.  **The three primary colours of light:**\n    The three primary colours of light are **Red**, **Green**, and **Blue** (often abbreviated a",
-          "baseline_text": "Here are the answers to your questions regarding the primary colours of light:\n\n**1. The Three Primary Colours of Light**\nThe three primary colours of light (additive colour model) are:\n*   **Red**\n*   **Green**\n*   **Bl"
-        }
-      ],
-      "claim": "exact"
     }
   ],
   "environment": {
+    "harness_version": "1.1.0 (2026-11-27-pin-fix)",
     "python": "3.12.16",
-    "python_executable": "/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/bin/python",
+    "python_executable": "/users/d2acosta/Projects/WeMM-Video/.venv-vllm/bin/python",
     "torch": "2.10.0+cu129",
     "cuda": "12.9.79",
     "vllm": "0.18.0",
@@ -213,27 +157,27 @@
     "huggingface_hub": "1.33.0",
     "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
     "gpu_memory_total_mib": 97887,
-    "gpu_memory_used_mib": 60,
+    "gpu_memory_used_mib": 0,
     "driver": "615.71.10",
     "compute_cap": "12.0",
     "nvidia_smi_version": "NVIDIA-SMI version  : 615.71.10",
     "gpu_count": 1,
-    "free_disk_gib": 1427.4,
+    "free_disk_gib": 1486.6,
     "cuda_visible_devices": "0",
     "hf_home": "/users/d2acosta/.cache/huggingface",
-    "hf_home_free_gib": 1427.4,
+    "hf_home_free_gib": 1486.6,
     "ffmpeg": "/usr/bin/ffmpeg",
     "model": "tencent/WeMM-Video-35BA3B",
     "bench_port": 8010,
     "bench_port_free": true,
     "bench_port_holder": null,
-    "vllm_path": "/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm",
+    "vllm_path": "/users/d2acosta/Projects/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/vllm",
     "wemm_registered": true,
     "mtp_registered": true,
     "torch_cuda": "12.9",
     "torch_cuda_available": true,
     "npp_package": "nvidia-npp-cu12",
-    "npp_lib_dir": "/users/d2acosta/WeMM-Inferencing/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/nvidia/npp/lib",
+    "npp_lib_dir": "/users/d2acosta/Projects/WeMM-Video/.venv-vllm/lib/python3.12/site-packages/nvidia/npp/lib",
     "npp_lib_present": true,
     "torchcodec_ok": true,
     "torchcodec_error": null,
@@ -243,7 +187,7 @@
         "index": 0,
         "name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
         "memory_total_mib": 97887,
-        "memory_used_mib": 60,
+        "memory_used_mib": 0,
         "driver": "615.71.10",
         "compute_cap": "12.0"
       }

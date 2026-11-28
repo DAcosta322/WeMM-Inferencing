@@ -75,7 +75,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--only-prepare", action="store_true")
     parser.add_argument("--results-dir", default=None)
     parser.add_argument("--startup-timeout", type=float, default=2400.0)
-    parser.add_argument("--allow-busy-gpu", action="store_true")
+    parser.add_argument(
+        "--allow-busy-gpu",
+        action="store_true",
+        help="skip the free-memory check (BF16 will still OOM if the GPU is shared)",
+    )
+    parser.add_argument(
+        "--wait-gpu",
+        type=float,
+        default=0,
+        metavar="SECONDS",
+        help="wait up to SECONDS for an idle GPU before giving up",
+    )
     parser.add_argument(
         "--skip-preflight",
         action="store_true",
@@ -137,15 +148,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     head = Path(args.mtp_head).resolve() if args.mtp_head else (results_dir / "mtp_head").resolve()
-    if args.self_test or args.dry_run or args.list_arms:
-        # Nothing loads weights here, but MTP arms must still be selected.
-        cfg.mtp_head = head
-        if args.dry_run and not head.exists():
-            log(f"note: MTP sidecar {head} does not exist yet (dry run only)")
-    else:
-        cfg.mtp_head = head if head.exists() else None
-    if args.mtp_head and not Path(args.mtp_head).exists() and not args.dry_run:
+    if args.mtp_head and not head.exists() and not args.dry_run:
         raise SystemExit(f"--mtp-head {args.mtp_head} does not exist")
+    # Always set the path so MTP arms are built and can be reported on; whether
+    # they can run is decided below.
+    cfg.mtp_head = head
 
     arms = build_arms(cfg, full=args.full)
     if args.custom_flags:
@@ -165,31 +172,45 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.list_arms:
         for arm in arms:
-            print(f"{arm.name:16s} {arm.kind:10s} {arm.label}")
+            suffix = ""
+            if arm.requires_mtp and not head.exists():
+                suffix = f"  [needs sidecar: {head}]"
+            print(f"{arm.name:16s} {arm.kind:10s} {arm.label}{suffix}")
         return 0
 
-    if cfg.mtp_head is None:
-        dropped = [a for a in arms if a.requires_mtp]
-        arms = [a for a in arms if not a.requires_mtp]
-        if dropped:
-            log(
-                "MTP sidecar not found, dropping MTP arms: "
-                + ", ".join(a.name for a in dropped)
-            )
-            log(f"  build it with: ./run_bench.sh prep-mtp  (expected at {head})")
     arms = select_arms(arms, args.arms)
     if not arms:
         raise SystemExit("no arms selected")
 
+    # Resolve missing-MTP behaviour: explicit request -> error, default -> drop.
+    if not args.self_test and not args.dry_run and not head.exists():
+        mtp_arms = [a for a in arms if a.requires_mtp]
+        if mtp_arms:
+            explicit = args.arms not in (None, "default", "all")
+            names = ", ".join(a.name for a in mtp_arms)
+            message = (
+                f"arm(s) {names} need the MTP sidecar, which does not exist at:\n"
+                f"  {head}\n"
+                "Build it with ./run_bench.sh prep-mtp (downloads ~10 GB), or pass an "
+                "existing --mtp-head PATH. To measure without MTP, use --arms without "
+                "the mtp* names."
+            )
+            if explicit:
+                raise SystemExit(message)
+            log("MTP sidecar not found; dropping MTP arms:")
+            log("  " + message.replace("\n", "\n  "))
+            arms = [a for a in arms if not a.requires_mtp]
+
     mtp_config_broken = False
     if not args.self_test and any(a.requires_mtp for a in arms):
-        from .fix_vllm_config import status as vllm_config_status
+        from .fix_vllm_config import eagle_status, status as vllm_config_status
 
-        if vllm_config_status() == "buggy":
+        qwen_state, eagle_state = vllm_config_status(), eagle_status()
+        if qwen_state == "buggy" or eagle_state == "buggy":
             mtp_config_broken = True
             log(
-                "MTP preflight: this vLLM build has the Qwen3.5-MoE list/set bug; "
-                "run ./run_bench.sh fix-mtp-config"
+                f"MTP preflight: vLLM backports missing (rope={qwen_state}, "
+                f"eagle={eagle_state}); run ./run_bench.sh fix-mtp-config"
             )
 
     if args.dry_run:
@@ -226,11 +247,13 @@ def main(argv: list[str] | None = None) -> int:
         if mtp_config_broken and not args.skip_preflight:
             print()
             print(
-                "MTP arms cannot start: vLLM 0.18.0's\n"
-                "  vllm/transformers_utils/configs/qwen3_5_moe.py\n"
-                "passes a list to ignore_keys_at_rope_validation, while transformers 5.2\n"
-                "expects a set (TypeError: unsupported operand type(s) for |). vLLM 0.31.0\n"
-                "uses a set. Apply the one-line backport with:\n"
+                "MTP arms cannot start: vLLM 0.18.0 needs two backports.\n"
+                "  1. transformers_utils/configs/qwen3_5_moe.py passes a list to\n"
+                "     ignore_keys_at_rope_validation; transformers 5.2 expects a set.\n"
+                "  2. v1/spec_decode/eagle.py does not recognise WeMM architectures, so it\n"
+                "     reads target_model.config.image_token_index, which WeMM does not have\n"
+                "     (it uses image_token_id).\n"
+                "Apply both with:\n"
                 "  ./run_bench.sh fix-mtp-config\n"
                 "then rerun (or pass --skip-preflight to measure the other arms anyway)."
             )
@@ -247,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     if not args.self_test:
-        check_gpu_idle(args.allow_busy_gpu)
+        check_gpu_idle(args.allow_busy_gpu, args.wait_gpu)
 
     print_rule("plan")
     for arm in arms:

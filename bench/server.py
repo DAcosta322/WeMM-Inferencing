@@ -23,6 +23,7 @@ from .common import (
     parse_prometheus,
     pick_port,
     port_is_free,
+    read_error_excerpt,
     read_text_tail,
     runtime_env,
     which,
@@ -40,6 +41,7 @@ class ServerSnapshot:
     """What the server log says actually happened (ground truth, not flags)."""
 
     attention_backend: str | None = None
+    backends: list[str] = field(default_factory=list)
     cuda_graphs: bool | None = None
     speculative: dict | None = None
     tensor_parallel: int | None = None
@@ -54,6 +56,7 @@ class ServerSnapshot:
     def to_dict(self) -> dict:
         return {
             "attention_backend": self.attention_backend,
+            "backends": self.backends,
             "cuda_graphs": self.cuda_graphs,
             "speculative": self.speculative,
             "tensor_parallel": self.tensor_parallel,
@@ -205,9 +208,9 @@ class ServerHandle:
         while time.time() < deadline:
             rc = self.proc.poll()
             if rc is not None:
-                tail = read_text_tail(self.log_path, 60)
+                excerpt = read_error_excerpt(self.log_path)
                 raise ServerStartError(
-                    f"server exited during startup with code {rc}.\n--- log tail ---\n{tail}",
+                    f"server exited during startup with code {rc}.\n--- error excerpt ---\n{excerpt}",
                     self.log_path,
                 )
             try:
@@ -230,10 +233,10 @@ class ServerHandle:
                 log(f"  still loading ({elapsed:.0f}s, last: {last_error[:80]})")
                 next_report = time.time() + 30
             time.sleep(2)
-        tail = read_text_tail(self.log_path, 60)
+        excerpt = read_error_excerpt(self.log_path)
         raise ServerStartError(
             f"server did not become healthy within {self.startup_timeout:.0f}s.\n"
-            f"--- log tail ---\n{tail}",
+            f"--- error excerpt ---\n{excerpt}",
             self.log_path,
         )
 
@@ -300,14 +303,14 @@ class ServerHandle:
 
         for line in lines:
             low = line.lower()
-            if "using" in low and "backend" in low:
+            backend_match = re.search(r"using\s+([a-z0-9_]+)\s+backend", low)
+            if backend_match:
+                name = backend_match.group(1).upper()
+                if name not in snapshot.backends:
+                    snapshot.backends.append(name)
+                if snapshot.attention_backend is None:
+                    snapshot.attention_backend = name
                 snapshot.evidence.append(line.strip()[:300])
-                if "flashinfer" in low:
-                    snapshot.attention_backend = "FLASHINFER"
-                elif "triton" in low:
-                    snapshot.attention_backend = "TRITON_ATTN"
-                elif "flash_attn" in low or "flash attention" in low:
-                    snapshot.attention_backend = "FLASH_ATTN"
             if "capturing cuda graph" in low or "cuda graph" in low:
                 if "not" in low and "captur" in low:
                     snapshot.cuda_graphs = False
@@ -368,6 +371,7 @@ class ServerHandle:
         merged = old
         for attr in (
             "attention_backend",
+            "backends",
             "cuda_graphs",
             "speculative",
             "tensor_parallel",

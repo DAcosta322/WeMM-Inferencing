@@ -89,7 +89,7 @@ fi
 
 usage() {
   cat <<'EOF'
-WeMM-Video-35B-A3B decode-TPS benchmark.
+WeMM-Video-35B-A3B decode-TPS benchmark.  [harness 1.1.0 / 2026-11-27-pin-fix]
 
   ./run_bench.sh env         probe GPU / vLLM / FlashInfer / WeMM patch
   ./run_bench.sh dry-run     print the exact server command for every arm

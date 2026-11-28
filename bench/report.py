@@ -57,6 +57,7 @@ def _quality_table(records: list[dict]) -> list[dict]:
             continue
         compared = 0
         exact = 0
+        first64_matches = 0
         ratios: list[float] = []
         divergences = []
         for q in record.get("quality", []):
@@ -68,6 +69,11 @@ def _quality_table(records: list[dict]) -> list[dict]:
             compared += 1
             same = (q.get("text") or "").strip() == (base.get("text") or "").strip()
             exact += int(same)
+            q_ids = q.get("output_token_ids") or []
+            b_ids = base.get("output_token_ids") or []
+            head = min(64, len(q_ids), len(b_ids))
+            if head > 0 and q_ids[:head] == b_ids[:head]:
+                first64_matches += 1
             prefix = _common_prefix(q.get("output_token_ids"), base.get("output_token_ids"))
             if prefix is not None:
                 denom = max(
@@ -90,6 +96,7 @@ def _quality_table(records: list[dict]) -> list[dict]:
                 "compared": compared,
                 "exact": exact,
                 "exact_rate": (exact / compared) if compared else None,
+                "first64_matches": first64_matches,
                 "token_prefix_ratio_median": statistics.median(ratios) if ratios else None,
                 "divergences": divergences,
                 "claim": record["arm"].get("claim_exact"),
@@ -263,8 +270,10 @@ def build_report(
     lines.append("## Output quality vs baseline")
     lines.append("")
     lines.append(
-        "Greedy, non-streaming, `seed=0`, thinking disabled. Token-level prefix ratio is "
-        "computed with the server tokenizer; 100% means the two outputs are token-identical."
+        "Greedy, non-streaming, `seed=0`, thinking disabled. `First 64 tok` counts prompts "
+        "whose first 64 generated token ids match exactly (stable even when a late near-tie "
+        "flips the tail); `Prefix` is the median token-level common prefix over the full "
+        "output. Read both against the noise-floor row."
     )
     lines.append("")
     recheck = next(
@@ -285,8 +294,8 @@ def build_report(
             "the default suite includes `baseline_recheck` and measures it."
         )
         lines.append("")
-    lines.append("| Arm | Claim | Exact matches | Token prefix (median) | Verdict |")
-    lines.append("| --- | --- | ---: | ---: | --- |")
+    lines.append("| Arm | Claim | Exact | First 64 tok | Prefix (median) | Verdict |")
+    lines.append("| --- | --- | ---: | ---: | ---: | --- |")
     for row in quality_rows:
         if row["compared"] == 0:
             continue
@@ -316,6 +325,7 @@ def build_report(
                 verdict = f"diverged ({100 - ratio * 100:.0f}% of tokens)"
         lines.append(
             f"| `{row['arm']}` | {row['claim']} | {row['exact']}/{row['compared']} | "
+            f"{row.get('first64_matches', 0)}/{row['compared']} | "
             f"{_fmt(ratio * 100, 1, '%')} | {verdict} |"
         )
     lines.append("")
@@ -357,7 +367,7 @@ def build_report(
         "from each arm's log after the run."
     )
     lines.append("")
-    lines.append("| Arm | Attention backend | CUDA graphs | Speculative | TP | KV dtype | GPU blocks |")
+    lines.append("| Arm | Attention backends (all logged) | CUDA graphs | Speculative | TP | KV dtype | GPU blocks |")
     lines.append("| --- | --- | --- | --- | ---: | --- | ---: |")
     for record in records:
         snap = record.get("snapshot") or {}
@@ -365,8 +375,10 @@ def build_report(
         spec_txt = "–"
         if spec:
             spec_txt = f"{spec.get('method', '?')} K={spec.get('num_speculative_tokens', '?')}"
+        backends = snap.get("backends") or []
+        backend_text = ", ".join(backends) if backends else (snap.get("attention_backend") or "?")
         lines.append(
-            f"| `{record['arm']['name']}` | {snap.get('attention_backend') or '?'} | "
+            f"| `{record['arm']['name']}` | {backend_text} | "
             f"{snap.get('cuda_graphs')} | {spec_txt} | {snap.get('tensor_parallel') or '?'} | "
             f"{snap.get('kv_cache_dtype') or '?'} | {snap.get('gpu_blocks') or '–'} |"
         )
