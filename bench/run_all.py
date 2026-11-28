@@ -81,7 +81,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--quant-model",
         default=None,
-        help="path to a quantised checkpoint; enables the <quant>*/mtp arms that need it",
+        help="quantised checkpoint: a HF repo id (tencent/WeMM-Video-35BA3B-…-FP8/NVFP4/AWQ) "
+        "or a local path; enables the <quant>*/mtp arms that need it",
     )
     parser.add_argument(
         "--gptq-model",
@@ -179,13 +180,8 @@ def main(argv: list[str] | None = None) -> int:
     # they can run is decided below.
     cfg.mtp_head = head
 
-    if (
-        args.quant_model
-        and not args.dry_run
-        and not args.self_test
-        and not Path(args.quant_model).exists()
-    ):
-        raise SystemExit(f"--quant-model {args.quant_model} does not exist")
+    # --quant-model may be a Hugging Face repo id (e.g. tencent/WeMM-Video-35BA3B-NVFP4)
+    # or a local path; vLLM resolves either, so don't require a filesystem entry here.
     cfg.quant_model = args.quant_model
     cfg.quant_method = args.quant_method
 

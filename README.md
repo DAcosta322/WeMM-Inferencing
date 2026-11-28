@@ -101,22 +101,27 @@ Both are idempotent, keep `.orig` backups, and change no numerics.
 ### Weight quantisation
 
 The `<quant>*` arms pass `--quantization <method>` against a quantised checkpoint supplied via
-`--quant-model PATH`, with the method chosen by `--quant-method` (default `awq`). Four methods
-are benchmarkable:
+`--quant-model` (a Hugging Face repo id or a local path), with the method chosen by
+`--quant-method` (default `awq`). Tencent publishes a checkpoint per format under
+`huggingface.co/tencent/`:
 
-| method | vLLM flag | bits | why |
-|---|---|---|---|
-| `awq` (default) | `awq_marlin` | 4 | equal-or-better than GPTQ, simpler calibration, and a WeMM AWQ checkpoint already exists |
-| `nvfp4` | `modelopt_fp4` | 4 (W4A8) | native Blackwell 4-bit with FP8 activations — best bandwidth/compute on sm_120, but needs an NVIDIA Model Optimizer checkpoint |
-| `gptq` | `gptq_marlin` | 4 | the reference int4 method; activation-aware but calibration-sensitive |
-| `fp8` | `fp8` | 8 (W8A8) | safest for the recurrent GDN layers (error accumulates across tokens); halves weight bytes |
+| method | vLLM flag | published checkpoint |
+|---|---|---|
+| `awq` (default) | `awq_marlin` | [`tencent/WeMM-Video-35BA3B-AWQ`](https://huggingface.co/tencent/WeMM-Video-35BA3B-AWQ) (AWQ W4A16) |
+| `nvfp4` | `modelopt_fp4` | [`tencent/WeMM-Video-35BA3B-NVFP4`](https://huggingface.co/tencent/WeMM-Video-35BA3B-NVFP4) (NVFP4 W4A16) |
+| `fp8` | `fp8` | [`tencent/WeMM-Video-35BA3B-FP8`](https://huggingface.co/tencent/WeMM-Video-35BA3B-FP8) (FP8 Block128) |
+| `gptq` | `gptq_marlin` | *none published* — quantise it yourself if you want this comparison |
+
+(There is also a [`tencent/WeMM-Video-35BA3B-GGUF`](https://huggingface.co/tencent/WeMM-Video-35BA3B-GGUF)
+for CPU/native runtime, but the patched-vLLM serving path covers BF16, FP8, AWQ and NVFP4 — not
+GGUF.)
 
 Quantising the ~3 B *active* expert weights cuts per-token weight traffic ~4× (4-bit) or ~2×
 (8-bit), which matters because weight reads are roughly half the measured decode budget. For
 this hybrid video model, prefer a method that keeps the recurrent GDN/linear-attention layers
 stable (`fp8` is the safe choice there) and leaves the vision tower, embeddings and `lm_head`
-unquantised — they are not on the decode-critical path. No public quantised WeMM checkpoint
-exists yet, so whichever method you pick must be produced offline first.
+unquantised — they are not on the decode-critical path. Only `gptq` requires producing a
+checkpoint offline.
 
 ### Tree speculation
 
@@ -277,8 +282,9 @@ Useful invocations:
 ./run_bench.sh run --quick                               # faster smoke
 ./run_bench.sh run --arms baseline,mtp3                  # a subset
 ./run_bench.sh run --gpu-mem 0.95                        # if BF16 + MTP sidecar OOMs at 0.90
-./run_bench.sh run --quant-model /path/to/wemm-quant      # quantised arms (default AWQ)
-./run_bench.sh run --quant-method nvfp4 --quant-model /path/to/wemm-nvfp4
+./run_bench.sh run --quant-model tencent/WeMM-Video-35BA3B-AWQ     # quantised arms (default AWQ)
+./run_bench.sh run --quant-method nvfp4 --quant-model tencent/WeMM-Video-35BA3B-NVFP4
+./run_bench.sh run --quant-method fp8 --quant-model tencent/WeMM-Video-35BA3B-FP8
 ./run_bench.sh run --custom-flags "--moe-backend ..." --arms custom
 ./run_bench.sh self-test
 ```
