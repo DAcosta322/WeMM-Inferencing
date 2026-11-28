@@ -63,12 +63,19 @@ EAGLE_FIXED_MARKER = "WeMMVideoMoeForConditionalGeneration"
 # --- fix 3: recognise ModelOpt 0.45 ``W4A16_NVFP4`` quant_algo -----------------
 # get_quant_method routes by exact string match; Tencent's checkpoint says
 # "W4A16_NVFP4" (upper-cased). Match by substring so both "NVFP4" and
-# "W4A16_NVFP4" resolve to the NVFP4 method.
-MODELOPT_NVFP4_OLD = 'quant_algo == "NVFP4"'
-MODELOPT_NVFP4_NEW = '"NVFP4" in quant_algo'
+# "W4A16_NVFP4" resolve to the NVFP4 method. ``quant_algo`` may be None for
+# layers outside ``quantized_layers``, so the match must be None-safe.
+MODELOPT_GOOD = 'quant_algo is not None and "NVFP4" in quant_algo'
 MODELOPT_GROUP_OLD = 'layer_info.get("quant_algo", "").upper() == "NVFP4"'
 MODELOPT_GROUP_NEW = '"NVFP4" in layer_info.get("quant_algo", "").upper()'
-MODELOPT_FIXED_MARKER = '"NVFP4" in quant_algo'
+# Matches the stock `== "NVFP4"` comparison, or the older non-None-safe backport
+# `"NVFP4" in quant_algo` (so re-running repairs a partial patch). The negative
+# lookbehind stops it from re-matching the GOOD form's own substring.
+MODELOPT_BAD_RE = re.compile(
+    r'quant_algo\s*==\s*"NVFP4"'
+    r'|(?<!is not None and )"NVFP4"\s+in\s+quant_algo'
+)
+MODELOPT_FIXED_MARKER = MODELOPT_GOOD
 
 
 def _vllm_root() -> Path | None:
@@ -216,7 +223,7 @@ def modelopt_status(path: Path | None = None) -> str:
     text = _read(path)
     if MODELOPT_FIXED_MARKER in text:
         return "fixed"
-    if MODELOPT_NVFP4_OLD in text or MODELOPT_GROUP_OLD in text:
+    if MODELOPT_BAD_RE.search(text) or MODELOPT_GROUP_OLD in text:
         return "buggy"
     return "unknown"
 
@@ -231,7 +238,7 @@ def apply_modelopt_fix(path: Path | None = None) -> tuple[bool, str]:
     if current != "buggy":
         return False, f"unrecognised file layout, not touched: {path}"
     text = _read(path)
-    n_nvfp4 = text.count(MODELOPT_NVFP4_OLD)
+    n_nvfp4 = len(MODELOPT_BAD_RE.findall(text))
     n_group = text.count(MODELOPT_GROUP_OLD)
     if n_nvfp4 < 2:
         return False, (
@@ -239,7 +246,7 @@ def apply_modelopt_fix(path: Path | None = None) -> tuple[bool, str]:
             f"found {n_nvfp4}; not touched"
         )
     _backup(path)
-    text = text.replace(MODELOPT_NVFP4_OLD, MODELOPT_NVFP4_NEW)
+    text = MODELOPT_BAD_RE.sub(MODELOPT_GOOD, text)
     text = text.replace(MODELOPT_GROUP_OLD, MODELOPT_GROUP_NEW)
     path.write_text(text, encoding="utf-8")
     return True, f"patched {path} ({n_nvfp4} get_quant_method + {n_group} group_size sites)"

@@ -112,13 +112,32 @@ class ModeloptFixTest(unittest.TestCase):
             self.assertTrue(ok, message)
             self.assertEqual(modelopt_status(path), "fixed")
             text = path.read_text()
-            # get_quant_method: two == "NVFP4" sites become substring matches.
+            # get_quant_method: two == "NVFP4" sites become None-safe substring matches.
             self.assertEqual(text.count('quant_algo == "NVFP4"'), 0)
-            self.assertIn('"NVFP4" in quant_algo', text)
+            self.assertIn('quant_algo is not None and "NVFP4" in quant_algo', text)
             self.assertIn('"NVFP4" in layer_info.get("quant_algo", "").upper()', text)
             self.assertTrue(apply_modelopt_fix(path)[0])  # idempotent
             self.assertTrue(revert_modelopt(path)[0])
             self.assertEqual(path.read_text(), MODELOPT)
+
+    def test_partial_backport_is_repaired(self) -> None:
+        # A previous non-None-safe backport (`"NVFP4" in quant_algo`) must be
+        # repaired to the None-safe form on re-apply.
+        intermediate = MODELOPT.replace(
+            'quant_algo == "NVFP4"', '"NVFP4" in quant_algo'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "modelopt.py"
+            path.write_text(intermediate)
+            self.assertEqual(modelopt_status(path), "buggy")
+            ok, message = apply_modelopt_fix(path)
+            self.assertTrue(ok, message)
+            text = path.read_text()
+            self.assertEqual(text.count('quant_algo == "NVFP4"'), 0)
+            self.assertEqual(
+                text.count('quant_algo is not None and "NVFP4" in quant_algo'), 2
+            )
+            self.assertEqual(modelopt_status(path), "fixed")
 
     def test_unknown_modelopt_layout_is_left_alone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
