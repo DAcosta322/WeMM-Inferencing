@@ -20,7 +20,7 @@ from .common import (
 )
 from .prompts import bench_suite, quality_suite, suite_fingerprint
 from .server import GpuSampler, ServerHandle, ServerStartError
-from .variants import Arm, RunConfig
+from .variants import Arm, RunConfig, arm_quantization, arm_spec_config
 
 
 @dataclass
@@ -55,15 +55,32 @@ def _gpu_compute_processes() -> list[str]:
     return lines
 
 
-REQUIRED_FREE_MIB = 78_000  # BF16 weights (~69 GiB) + MTP sidecar + KV/graphs
+MODEL_AND_SIDECAR_MIB = 72_700  # BF16 weights (~69 GiB) + MTP sidecar
+RUNTIME_OVERHEAD_MIB = 5_300  # activations, CUDA graphs, KV at 8k
 
 
-def check_gpu_idle(allow_busy: bool, wait_seconds: float = 0) -> list[dict]:
+def required_free_mib(tp_size: int = 1) -> int:
+    tp = max(1, int(tp_size))
+    return MODEL_AND_SIDECAR_MIB // tp + RUNTIME_OVERHEAD_MIB
+
+
+REQUIRED_FREE_MIB = required_free_mib(1)
+
+
+def check_gpu_idle(
+    allow_busy: bool, wait_seconds: float = 0, tp_size: int = 1
+) -> list[dict]:
     deadline = time.time() + max(0.0, wait_seconds)
     while True:
         gpus = gpu_inventory()
         if not gpus:
             return gpus
+        if len(gpus) < max(1, tp_size):
+            raise SystemExit(
+                f"--tp {tp_size} needs {tp_size} GPUs, but only {len(gpus)} are visible "
+                f"(CUDA_VISIBLE_DEVICES={', '.join(str(g['index']) for g in gpus) or 'none'}). "
+                "Request --gres=gpu:" + str(max(1, tp_size)) + " or use --tp 1."
+            )
         busy = [g for g in gpus if g["memory_used_mib"] > 3000]
         if not busy or allow_busy:
             return gpus
@@ -71,11 +88,12 @@ def check_gpu_idle(allow_busy: bool, wait_seconds: float = 0) -> list[dict]:
             break
         free = busy[0]["memory_total_mib"] - busy[0]["memory_used_mib"]
         log(
-            f"waiting for an idle GPU: {free} MiB free, need ~{REQUIRED_FREE_MIB} MiB; "
-            f"{int(deadline - time.time())}s left"
+            f"waiting for an idle GPU: {free} MiB free, need ~{required_free_mib(tp_size)} MiB "
+            f"per GPU; {int(deadline - time.time())}s left"
         )
         time.sleep(30)
     processes = _gpu_compute_processes()
+    need = required_free_mib(tp_size)
     lines = []
     for gpu in busy:
         free = gpu["memory_total_mib"] - gpu["memory_used_mib"]
@@ -89,8 +107,8 @@ def check_gpu_idle(allow_busy: bool, wait_seconds: float = 0) -> list[dict]:
         holders = "\nGPU processes:\n  " + "\n  ".join(processes[:8])
     raise SystemExit(
         f"Not enough free GPU memory to start the benchmark:\n  {detail}{holders}\n"
-        f"BF16 weights + the MTP sidecar + KV/activations need about "
-        f"{REQUIRED_FREE_MIB} MiB free.\n"
+        f"BF16 weights + the MTP sidecar + KV/activations need about {need} MiB free "
+        f"per GPU (TP={tp_size}).\n"
         "\n"
         "Do NOT kill a PID you do not own. Options, in order:\n"
         "  1. If the process is yours, stop it (kill <pid>) and rerun.\n"
@@ -99,9 +117,18 @@ def check_gpu_idle(allow_busy: bool, wait_seconds: float = 0) -> list[dict]:
         "       srun --gres=gpu:1 --mem=8G --pty bash -lc 'nvidia-smi; echo CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES'\n"
         "     If the node enables MPS, Slurm may share a GPU across users; ask for a\n"
         "     free node or exclusive GPU access.\n"
-        "  3. --allow-busy-gpu overrides this check, but BF16 will not fit next to a\n"
+        "  3. --allow-busy-gpu overrides this check, but TP=1 BF16 will not fit next to a\n"
         "     37 GiB neighbour and vLLM will OOM during startup. It is only useful for\n"
-        "     small models or quantised checkpoints.\n"
+        "     small models, quantised checkpoints, or the TP=2 case below.\n"
+        + (
+            "  4. If you can allocate both GPUs, TP=2 splits the weights (~36 GiB per GPU):\n"
+            "       --gres=gpu:2 --tp 2 --gpu-mem 0.55 --allow-busy-gpu\n"
+            "     This needs ~44 GiB free per GPU, so it can coexist with a 37 GiB tenant.\n"
+            "     It is the official WeMM recipe, but it measures 2 GPUs, not the single-GPU\n"
+            "     target in the brief; use it only if TP=1 is unobtainable.\n"
+            if len(gpus) > 1 and tp_size == 1
+            else ""
+        )
     )
 
 
@@ -156,6 +183,36 @@ def _without_flag(flags: list[str], flag: str) -> list[str]:
     return out
 
 
+def _merge_requested_config(snapshot: dict, arm: Arm) -> dict:
+    """Fill snapshot gaps from the arm's own flags.
+
+    vLLM does not log ``speculative_token_tree`` or always the quantization name,
+    so fall back to the requested flags when the log (the ground truth) is silent.
+    """
+    snap = dict(snapshot or {})
+    spec = arm_spec_config(arm)
+    if spec:
+        s = dict(snap.get("speculative") or {})
+        if "method" in spec and "method" not in s:
+            s["method"] = spec["method"]
+        if "num_speculative_tokens" in spec and "num_speculative_tokens" not in s:
+            s["num_speculative_tokens"] = spec["num_speculative_tokens"]
+        snap["speculative"] = s or None
+        tree = spec.get("speculative_token_tree")
+        if tree and not snap.get("speculative_token_tree"):
+            snap["speculative_token_tree"] = tree
+            try:
+                import ast
+
+                snap["tree_nodes"] = len(ast.literal_eval(tree))
+            except (ValueError, SyntaxError):
+                snap["tree_nodes"] = None
+    quant = arm_quantization(arm)
+    if quant and not snap.get("quantization"):
+        snap["quantization"] = quant
+    return snap
+
+
 def summarise_requests(results: list[dict]) -> dict:
     ok = [r for r in results if r.get("ok") and r.get("decode_tps")]
     tps = [r["decode_tps"] for r in ok]
@@ -199,7 +256,7 @@ def run_arm(
         "started_at": utc_now(),
         "prompt_suite_fingerprint": suite_fingerprint(bench_suite()),
         "config": {
-            "model": cfg.model,
+            "model": arm.model or cfg.model,
             "served_name": cfg.served_name,
             "max_model_len": cfg.max_model_len,
             "tp_size": cfg.tp_size,
@@ -226,7 +283,7 @@ def run_arm(
         def launch(flags: list[str]):
             if launcher is None:
                 new_handle = ServerHandle(
-                    model=cfg.model,
+                    model=arm.model or cfg.model,
                     served_name=cfg.served_name,
                     flags=flags,
                     log_path=log_path,
@@ -281,6 +338,7 @@ def run_arm(
                 raise
         record["startup_s"] = round(time.time() - t_arm, 2)
         record["snapshot"] = handle.snapshot.to_dict() if hasattr(handle.snapshot, "to_dict") else dict(handle.snapshot)
+        record["snapshot"] = _merge_requested_config(record["snapshot"], arm)
 
         client = ChatClient(handle.base_url, cfg.served_name, read_timeout=ctx.read_timeout)
         if not client.health():
@@ -406,7 +464,7 @@ def run_arm(
                         if hasattr(handle.snapshot, "to_dict")
                         else dict(handle.snapshot)
                     )
-                    record["snapshot"] = snapshot
+                    record["snapshot"] = _merge_requested_config(snapshot, arm)
             except Exception as exc:  # noqa: BLE001
                 record.setdefault("teardown_error", f"{type(exc).__name__}: {exc}")
                 log(f"  WARNING: server teardown failed: {exc}")

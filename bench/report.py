@@ -250,21 +250,25 @@ def build_report(
     if any(row.get("acceptance_rate") for row in rows):
         lines.append("## Speculative decoding")
         lines.append("")
-        lines.append("| Arm | Acceptance rate | Mean accepted length | Drafts | Accepted |")
-        lines.append("| --- | ---: | ---: | ---: | ---: |")
+        lines.append("| Arm | Acceptance rate | Mean accepted length | Drafts | Accepted | Tree nodes |")
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
         for record in records:
             spec = record.get("spec_acceptance")
             if not spec:
                 continue
+            tree_nodes = (record.get("snapshot") or {}).get("tree_nodes")
+            tree_txt = f"{tree_nodes}" if tree_nodes else "–"
             lines.append(
                 f"| `{record['arm']['name']}` | {spec['acceptance_rate'] * 100:.1f}% | "
                 f"{spec['mean_acceptance_length']:.2f} | {spec['drafts']:.0f} | "
-                f"{spec['accepted_tokens']:.0f} |"
+                f"{spec['accepted_tokens']:.0f} | {tree_txt} |"
             )
         lines.append("")
         lines.append(
             "Mean acceptance length ≈ `1 + accepted/drafts` tokens per target forward. "
-            "A K=3 run at 70% acceptance approaches ~2.0× over the same non-speculative server."
+            "`Acceptance rate` is the raw accepted/drafted ratio (a tree drafts many more "
+            "tokens per step, so its rate reads low while its mean length is the meaningful "
+            "number)."
         )
         lines.append("")
     lines.append("## Output quality vs baseline")
@@ -367,19 +371,22 @@ def build_report(
         "from each arm's log after the run."
     )
     lines.append("")
-    lines.append("| Arm | Attention backends (all logged) | CUDA graphs | Speculative | TP | KV dtype | GPU blocks |")
-    lines.append("| --- | --- | --- | --- | ---: | --- | ---: |")
+    lines.append("| Arm | Attention backends (all logged) | CUDA graphs | Speculative | Quantization | TP | KV dtype | GPU blocks |")
+    lines.append("| --- | --- | --- | --- | --- | ---: | --- | ---: |")
     for record in records:
         snap = record.get("snapshot") or {}
         spec = snap.get("speculative")
         spec_txt = "–"
         if spec:
             spec_txt = f"{spec.get('method', '?')} K={spec.get('num_speculative_tokens', '?')}"
+            if snap.get("speculative_token_tree"):
+                spec_txt += f" tree({snap.get('tree_nodes') or '?'})"
         backends = snap.get("backends") or []
         backend_text = ", ".join(backends) if backends else (snap.get("attention_backend") or "?")
+        quant = snap.get("quantization") or "–"
         lines.append(
             f"| `{record['arm']['name']}` | {backend_text} | "
-            f"{snap.get('cuda_graphs')} | {spec_txt} | {snap.get('tensor_parallel') or '?'} | "
+            f"{snap.get('cuda_graphs')} | {spec_txt} | {quant} | {snap.get('tensor_parallel') or '?'} | "
             f"{snap.get('kv_cache_dtype') or '?'} | {snap.get('gpu_blocks') or '–'} |"
         )
     lines.append("")

@@ -4,15 +4,21 @@ Arms are deliberately small and additive so that the contribution of each
 optimisation is visible:
 
     baseline          official WeMM recipe, BF16, TP=1, nothing else
-    flashinfer        + --attention-backend FLASHINFER  (CUDA graphs are on by default)
-    flashinfer_fp8kv  + --kv-cache-dtype fp8
-    mtp3              flashinfer + Qwen3.5 MTP head, K=3
-    mtp3_fp8kv        flashinfer + fp8 KV + MTP K=3   (all listed optimisations)
-    mtp5*             flashinfer + MTP K=5            (* --full)
-    ngram*            flashinfer + n-gram speculation (* --full, no extra weights)
-    eager*            baseline with CUDA graphs off   (* --full, diagnostic only)
+    gptq              + --quantization gptq_marlin (int4 weights; needs a GPTQ checkpoint)
+    mtp3              + Qwen3.5 MTP head, K=3
+    mtp3_tree         + MTP K=3 with a depth-3 / branch-2 speculation tree
+    gptq_mtp3         GPTQ weights + MTP K=3
+    gptq_tree         GPTQ weights + MTP K=3 tree
+    flashinfer*       + --attention-backend FLASHINFER  (* --full, diagnostic)
+    fp8kv*            + --kv-cache-dtype fp8            (* --full)
+    mtp3_fp8kv*       + MTP K=3 + FP8 KV                (* --full)
+    mtp5*/mtp1*/mtp7* MTP K sweep                       (* --full)
+    ngram*            n-gram speculation                (* --full, negative result)
+    eager*            CUDA graphs off                   (* --full, diagnostic only)
 
 Every arm runs the same prompts, seeds, token limits and measurement protocol.
+Speculative arms are lossless for greedy output (the target re-verifies every
+draft token); quantised arms are lossy and are marked ``claim_exact="likely"``.
 """
 
 from __future__ import annotations
@@ -22,9 +28,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+TREE_DEPTH = 3
+TREE_BRANCHING = 2
+
+GPTQ_FLAGS = ["--quantization", "gptq_marlin"]
+
+
 @dataclass
 class RunConfig:
     model: str = "tencent/WeMM-Video-35BA3B"
+    gptq_model: str | None = None  # path to a GPTQ-quantised checkpoint (int4)
     served_name: str = "wemm-35b"
     max_model_len: int = 8192
     tp_size: int = 1
@@ -57,15 +70,38 @@ class RunConfig:
         ]
 
 
+def arm_spec_config(arm: "Arm") -> dict | None:
+    """Return the parsed ``--speculative-config`` JSON for an arm, if any."""
+    flags = arm.extra_flags
+    for i, flag in enumerate(flags):
+        if flag == "--speculative-config" and i + 1 < len(flags):
+            try:
+                return json.loads(flags[i + 1])
+            except (ValueError, TypeError):
+                return None
+    return None
+
+
+def arm_quantization(arm: "Arm") -> str | None:
+    """Return the ``--quantization`` value for an arm, if any."""
+    flags = arm.extra_flags
+    for i, flag in enumerate(flags):
+        if flag == "--quantization" and i + 1 < len(flags):
+            return flags[i + 1]
+    return None
+
+
 @dataclass
 class Arm:
     name: str
     label: str
     kind: str  # baseline | opt | diagnostic
     extra_flags: list[str] = field(default_factory=list)
-    claim_exact: str = "exact"  # exact | likely | no
+    claim_exact: str = "exact"  # exact | likely | no | baseline | unknown
     note: str = ""
     requires_mtp: bool = False
+    requires_gptq: bool = False
+    model: str | None = None  # override RunConfig.model (e.g. a GPTQ checkpoint)
 
     def flags(self, cfg: RunConfig) -> list[str]:
         return cfg.common_flags() + self.extra_flags
@@ -75,11 +111,49 @@ class Arm:
             "name": self.name,
             "label": self.label,
             "kind": self.kind,
+            "model": self.model,
             "extra_flags": self.extra_flags,
             "claim_exact": self.claim_exact,
             "note": self.note,
             "requires_mtp": self.requires_mtp,
+            "requires_gptq": self.requires_gptq,
+            "speculative": arm_spec_config(self),
+            "quantization": arm_quantization(self),
         }
+
+
+def tree_choices(
+    depth: int = TREE_DEPTH, branching: int = TREE_BRANCHING
+) -> list[tuple[int, ...]]:
+    """Breadth-first uniform-branching speculation tree.
+
+    Each node is a tuple of child indices describing its path from the root
+    (``()``): ``(0,)`` is the first root child, ``(0, 1)`` its second child.
+    vLLM re-sorts this breadth-first anyway; we emit it pre-sorted.
+    """
+    nodes: list[tuple[int, ...]] = []
+    frontier: list[tuple[int, ...]] = [()]
+    for _ in range(depth):
+        nxt: list[tuple[int, ...]] = []
+        for parent in frontier:
+            for i in range(branching):
+                node = parent + (i,)
+                nodes.append(node)
+                nxt.append(node)
+        frontier = nxt
+    nodes.sort(key=lambda t: (len(t), t))
+    return nodes
+
+
+def tree_spec_string(
+    depth: int = TREE_DEPTH, branching: int = TREE_BRANCHING
+) -> str:
+    """The ``speculative_token_tree`` literal vLLM expects (a tuple path list)."""
+    return repr(tree_choices(depth, branching))
+
+
+def tree_node_count(depth: int = TREE_DEPTH, branching: int = TREE_BRANCHING) -> int:
+    return sum(branching**i for i in range(1, depth + 1))
 
 
 def _mtp_spec(head: Path | None, k: int) -> list[str]:
@@ -93,6 +167,22 @@ def _mtp_spec(head: Path | None, k: int) -> list[str]:
     return ["--speculative-config", json.dumps(payload, separators=(",", ":"))]
 
 
+def _mtp_tree_spec(
+    head: Path | None,
+    k: int = TREE_DEPTH,
+    branching: int = TREE_BRANCHING,
+) -> list[str]:
+    if head is None:
+        raise ValueError("MTP tree arm requested but no --mtp-head path is set")
+    payload = {
+        "model": str(head),
+        "method": "mtp",
+        "num_speculative_tokens": k,
+        "speculative_token_tree": tree_spec_string(k, branching),
+    }
+    return ["--speculative-config", json.dumps(payload, separators=(",", ":"))]
+
+
 def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
     # No explicit --attention-backend: stock vLLM selects TRITON on this GPU and an
     # explicit FLASHINFER pin crashed engine init on the rebuilt environment.
@@ -101,7 +191,7 @@ def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
     arms = [
         Arm(
             name="baseline",
-            label="Out-of-the-box BF16 (official recipe, TP=1)",
+            label=f"Out-of-the-box BF16 (official recipe, TP={cfg.tp_size})",
             kind="baseline",
             claim_exact="baseline",
             note="No extra flags; vLLM selects TRITON + CUDA graphs on this GPU.",
@@ -109,6 +199,22 @@ def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
     ]
 
     mtp_ready = cfg.mtp_head is not None
+
+    # GPTQ arms are always built (they need --gptq-model to actually run); the
+    # orchestrator drops or errors on them when the checkpoint is missing.
+    arms.append(
+        Arm(
+            name="gptq",
+            label="GPTQ int4 (gptq_marlin)",
+            kind="opt",
+            model=cfg.gptq_model,
+            extra_flags=GPTQ_FLAGS,
+            claim_exact="likely",
+            note="Lossy: int4 weights cut per-token weight traffic ~4x; relaxes the token-exact gate.",
+            requires_gptq=True,
+        )
+    )
+
     if mtp_ready:
         arms.append(
             Arm(
@@ -119,6 +225,48 @@ def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
                 claim_exact="exact",
                 note="Speculative verification keeps the target distribution; watch the acceptance rate.",
                 requires_mtp=True,
+            )
+        )
+        arms.append(
+            Arm(
+                name="mtp3_tree",
+                label=f"+ MTP K=3 tree (depth {TREE_DEPTH}, branch {TREE_BRANCHING})",
+                kind="opt",
+                extra_flags=_mtp_tree_spec(cfg.mtp_head, 3),
+                claim_exact="exact",
+                note=(
+                    f"Single-forward tree verification over {tree_node_count()} nodes; "
+                    "hedges near-ties, but verify cost can offset the extra acceptance."
+                ),
+                requires_mtp=True,
+            )
+        )
+
+    if mtp_ready:
+        arms.append(
+            Arm(
+                name="gptq_mtp3",
+                label="GPTQ + MTP K=3",
+                kind="opt",
+                model=cfg.gptq_model,
+                extra_flags=GPTQ_FLAGS + _mtp_spec(cfg.mtp_head, 3),
+                claim_exact="likely",
+                note="Quantised target drifts the draft head's argmax; expect lower acceptance (p~0.6).",
+                requires_mtp=True,
+                requires_gptq=True,
+            )
+        )
+        arms.append(
+            Arm(
+                name="gptq_tree",
+                label=f"GPTQ + MTP tree (depth {TREE_DEPTH}, branch {TREE_BRANCHING})",
+                kind="opt",
+                model=cfg.gptq_model,
+                extra_flags=GPTQ_FLAGS + _mtp_tree_spec(cfg.mtp_head, 3),
+                claim_exact="likely",
+                note="Quantised target + tree verification; highest-yield combination.",
+                requires_mtp=True,
+                requires_gptq=True,
             )
         )
 
@@ -243,8 +391,11 @@ def render_commands(cfg: RunConfig, arms: list[Arm]) -> str:
 
     lines = []
     for arm in arms:
+        model = arm.model or cfg.model
+        if arm.requires_gptq and not arm.model:
+            model = "<GPTQ-CHECKPOINT>"
         cmd = build_server_cmd(
-            cfg.model, cfg.served_name, cfg.host, cfg.port, arm.flags(cfg)
+            model, cfg.served_name, cfg.host, cfg.port, arm.flags(cfg)
         )
         lines.append(f"# --- {arm.name}: {arm.label} ---")
         lines.append(" ".join(_shell_quote(part) for part in cmd))

@@ -1,2 +1,4 @@
 INFO mock server: Using FLASHINFER backend. Capturing CUDA graphs (PIECEWISE).
-INFO mock server: profile={'ms_per_token': 12.2, 'ttft_ms': 270, 'accept': 0.72, 'k': 3}
+INFO mock server: SpeculativeConfig(method='mtp', model='mock-draft', num_spec_tokens=3)
+INFO mock server: quantization=None
+INFO mock server: profile={'ms_per_token': 2.44, 'ttft_ms': 200, 'accept': 0.65, 'k': 3}

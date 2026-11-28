@@ -17,24 +17,45 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .server import ServerSnapshot
+from .variants import TREE_BRANCHING, TREE_DEPTH, tree_spec_string
 
+# Simulated per-arm profiles. ``ms_per_token`` drives the streamed latency and is
+# rebased on the measured BF16 baseline (6.3 ms/token, 159.8 tok/s); ``accept`` is
+# the acceptance rate vLLM reports (accepted/drafted); ``k`` is the speculation
+# depth; ``nodes`` is the number of draft tokens per verification step (equals ``k``
+# for a linear chain, the tree size for ``tree`` arms). These are pipeline
+# placeholders, NOT measurements.
 PROFILES: dict[str, dict] = {
-    "baseline": {"ms_per_token": 22.0, "ttft_ms": 280, "accept": 0.0, "k": 0},
-    "flashinfer": {"ms_per_token": 21.0, "ttft_ms": 260, "accept": 0.0, "k": 0},
-    "flashinfer_fp8kv": {"ms_per_token": 20.6, "ttft_ms": 255, "accept": 0.0, "k": 0},
-    "fp8kv": {"ms_per_token": 20.6, "ttft_ms": 255, "accept": 0.0, "k": 0},
-    "fp8kv_scaled": {"ms_per_token": 20.6, "ttft_ms": 255, "accept": 0.0, "k": 0},
-    "baseline_recheck": {"ms_per_token": 22.0, "ttft_ms": 280, "accept": 0.0, "k": 0},
-    "pin_flashinfer": {"ms_per_token": 22.0, "ttft_ms": 280, "accept": 0.0, "k": 0},
-    "mtp1": {"ms_per_token": 14.5, "ttft_ms": 265, "accept": 0.85, "k": 1},
-    "mtp3": {"ms_per_token": 12.2, "ttft_ms": 270, "accept": 0.72, "k": 3},
-    "mtp3_fp8kv": {"ms_per_token": 12.0, "ttft_ms": 265, "accept": 0.72, "k": 3},
-    "mtp5": {"ms_per_token": 10.6, "ttft_ms": 275, "accept": 0.55, "k": 5},
-    "mtp7": {"ms_per_token": 9.9, "ttft_ms": 280, "accept": 0.42, "k": 7},
-    "single_seq": {"ms_per_token": 12.0, "ttft_ms": 270, "accept": 0.72, "k": 3},
-    "ngram": {"ms_per_token": 20.0, "ttft_ms": 260, "accept": 0.25, "k": 4},
-    "eager": {"ms_per_token": 26.5, "ttft_ms": 300, "accept": 0.0, "k": 0},
+    "baseline": {"ms_per_token": 6.3, "ttft_ms": 202, "accept": 0.0, "k": 0},
+    "flashinfer": {"ms_per_token": 6.1, "ttft_ms": 200, "accept": 0.0, "k": 0},
+    "flashinfer_fp8kv": {"ms_per_token": 6.2, "ttft_ms": 200, "accept": 0.0, "k": 0},
+    "fp8kv": {"ms_per_token": 6.2, "ttft_ms": 200, "accept": 0.0, "k": 0},
+    "fp8kv_scaled": {"ms_per_token": 6.2, "ttft_ms": 200, "accept": 0.0, "k": 0},
+    "baseline_recheck": {"ms_per_token": 6.3, "ttft_ms": 202, "accept": 0.0, "k": 0},
+    "pin_flashinfer": {"ms_per_token": 6.2, "ttft_ms": 200, "accept": 0.0, "k": 0},
+    "gptq": {"ms_per_token": 4.3, "ttft_ms": 205, "accept": 0.0, "k": 0, "quantized": True},
+    "mtp1": {"ms_per_token": 3.57, "ttft_ms": 200, "accept": 0.85, "k": 1},
+    "mtp3": {"ms_per_token": 2.44, "ttft_ms": 200, "accept": 0.65, "k": 3},
+    "mtp3_tree": {"ms_per_token": 3.1, "ttft_ms": 200, "accept": 0.156, "k": 3, "tree": True},
+    "mtp3_fp8kv": {"ms_per_token": 2.44, "ttft_ms": 200, "accept": 0.65, "k": 3},
+    "gptq_mtp3": {"ms_per_token": 2.39, "ttft_ms": 205, "accept": 0.39, "k": 3, "quantized": True},
+    "gptq_tree": {"ms_per_token": 2.18, "ttft_ms": 205, "accept": 0.156, "k": 3, "tree": True, "quantized": True},
+    "mtp5": {"ms_per_token": 2.08, "ttft_ms": 200, "accept": 0.55, "k": 5},
+    "mtp7": {"ms_per_token": 2.13, "ttft_ms": 200, "accept": 0.42, "k": 7},
+    "single_seq": {"ms_per_token": 2.44, "ttft_ms": 200, "accept": 0.65, "k": 3},
+    "ngram": {"ms_per_token": 7.7, "ttft_ms": 200, "accept": 0.25, "k": 4},
+    "eager": {"ms_per_token": 8.5, "ttft_ms": 210, "accept": 0.0, "k": 0},
 }
+
+
+def _draft_nodes(profile: dict) -> int:
+    """Total draft tokens per verification step (tree size or linear depth)."""
+    if profile.get("nodes"):
+        return int(profile["nodes"])
+    k = profile.get("k") or 0
+    if k and profile.get("tree"):
+        return sum(TREE_BRANCHING**i for i in range(1, k + 1))
+    return k
 
 _WORDS = (
     "the model routes tokens through a sparse mixture of experts while the "
@@ -65,16 +86,16 @@ class _State:
         self.accepted = 0.0
 
     def observe(self, n_tokens: int) -> None:
-        k = self.profile["k"]
-        accept = self.profile["accept"]
-        if not k or not accept:
+        nodes = _draft_nodes(self.profile)
+        accept = self.profile.get("accept", 0.0)
+        if not nodes or not accept:
             return
-        # Roughly one draft step per emitted token group.
-        steps = max(1.0, n_tokens / (1 + k * accept))
+        # Roughly one verification step per emitted token group.
+        steps = max(1.0, n_tokens / (1 + nodes * accept))
         with self.lock:
             self.drafts += steps
-            self.draft_tokens += steps * k
-            self.accepted += steps * k * accept
+            self.draft_tokens += steps * nodes
+            self.accepted += steps * nodes * accept
 
 
 def _make_handler(state: _State):
@@ -281,16 +302,25 @@ class MockHandle:
         self._log_fh = None
 
     def _snapshot(self) -> MockSnapshot:
-        has_spec = bool(self.profile["k"])
+        k = self.profile.get("k") or 0
+        has_spec = bool(k)
+        spec = None
+        tree = None
+        tree_nodes = None
+        if has_spec:
+            method = "ngram" if self.arm_name == "ngram" else "mtp"
+            spec = {"method": method, "num_speculative_tokens": k}
+            if self.profile.get("tree"):
+                tree = tree_spec_string(TREE_DEPTH, TREE_BRANCHING)
+                tree_nodes = _draft_nodes(self.profile)
+        quant = "gptq_marlin" if self.profile.get("quantized") else None
         return MockSnapshot(
             attention_backend="FLASHINFER",
             cuda_graphs=self.arm_name != "eager",
-            speculative={
-                "method": "mtp" if self.arm_name.startswith(("mtp", "single_seq")) else "ngram",
-                "num_speculative_tokens": self.profile["k"],
-            }
-            if has_spec
-            else None,
+            speculative=spec,
+            quantization=quant,
+            speculative_token_tree=tree,
+            tree_nodes=tree_nodes,
             tensor_parallel=1,
             kv_cache_dtype="fp8" if "fp8" in self.arm_name else "auto",
             max_model_len=8192,
@@ -307,8 +337,13 @@ class MockHandle:
         self._thread.start()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_fh = self.log_path.open("w", encoding="utf-8")
+        spec = self.snapshot.speculative or {}
+        quant = self.snapshot.quantization or "None"
         self._log_fh.write(
             "INFO mock server: Using FLASHINFER backend. Capturing CUDA graphs (PIECEWISE).\n"
+            f"INFO mock server: SpeculativeConfig(method={spec.get('method', 'None')!r}, "
+            f"model='mock-draft', num_spec_tokens={spec.get('num_speculative_tokens', 0)})\n"
+            f"INFO mock server: quantization={quant}\n"
             f"INFO mock server: profile={self.profile}\n"
         )
         self._log_fh.flush()

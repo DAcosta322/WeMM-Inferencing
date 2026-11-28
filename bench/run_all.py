@@ -69,8 +69,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="fail instead of moving to another port when --port is busy",
     )
     parser.add_argument("--gpu-mem", type=float, default=0.90)
+    parser.add_argument(
+        "--tp",
+        type=int,
+        default=1,
+        help="tensor-parallel size / number of GPUs (the official WeMM recipe uses 2)",
+    )
     parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--mtp-head", default=None, help="path to the MTP sidecar directory")
+    parser.add_argument(
+        "--gptq-model",
+        default=None,
+        help="path to a GPTQ (int4) checkpoint; enables the gptq*/mtp arms that need it",
+    )
     parser.add_argument("--prepare-mtp", action="store_true", help="build the MTP sidecar before running")
     parser.add_argument("--only-prepare", action="store_true")
     parser.add_argument("--results-dir", default=None)
@@ -122,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         served_name=args.served_name,
         max_model_len=args.max_model_len,
         gpu_mem_util=args.gpu_mem,
+        tp_size=args.tp,
         port=args.port,
         max_tokens=args.max_tokens,
         reps=args.reps if args.reps is not None else (1 if args.self_test else (2 if args.quick else 5)),
@@ -154,6 +166,15 @@ def main(argv: list[str] | None = None) -> int:
     # they can run is decided below.
     cfg.mtp_head = head
 
+    if (
+        args.gptq_model
+        and not args.dry_run
+        and not args.self_test
+        and not Path(args.gptq_model).exists()
+    ):
+        raise SystemExit(f"--gptq-model {args.gptq_model} does not exist")
+    cfg.gptq_model = args.gptq_model
+
     arms = build_arms(cfg, full=args.full)
     if args.custom_flags:
         import shlex
@@ -175,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
             suffix = ""
             if arm.requires_mtp and not head.exists():
                 suffix = f"  [needs sidecar: {head}]"
+            if arm.requires_gptq and not cfg.gptq_model:
+                suffix += "  [needs --gptq-model]"
             print(f"{arm.name:16s} {arm.kind:10s} {arm.label}{suffix}")
         return 0
 
@@ -182,24 +205,37 @@ def main(argv: list[str] | None = None) -> int:
     if not arms:
         raise SystemExit("no arms selected")
 
-    # Resolve missing-MTP behaviour: explicit request -> error, default -> drop.
-    if not args.self_test and not args.dry_run and not head.exists():
-        mtp_arms = [a for a in arms if a.requires_mtp]
-        if mtp_arms:
-            explicit = args.arms not in (None, "default", "all")
-            names = ", ".join(a.name for a in mtp_arms)
-            message = (
-                f"arm(s) {names} need the MTP sidecar, which does not exist at:\n"
-                f"  {head}\n"
-                "Build it with ./run_bench.sh prep-mtp (downloads ~10 GB), or pass an "
-                "existing --mtp-head PATH. To measure without MTP, use --arms without "
-                "the mtp* names."
-            )
+    # Resolve missing-prerequisite behaviour: explicit request -> error, default -> drop.
+    if not args.self_test and not args.dry_run:
+        explicit = args.arms not in (None, "default", "all")
+
+        def drop_or_fail(attr: str, message: str) -> None:
+            nonlocal arms
+            missing = [a for a in arms if getattr(a, attr)]
+            if not missing:
+                return
+            names = ", ".join(a.name for a in missing)
+            full = f"arm(s) {names} {message}"
             if explicit:
-                raise SystemExit(message)
-            log("MTP sidecar not found; dropping MTP arms:")
-            log("  " + message.replace("\n", "\n  "))
-            arms = [a for a in arms if not a.requires_mtp]
+                raise SystemExit(full)
+            log(full)
+            arms = [a for a in arms if not getattr(a, attr)]
+
+        if not head.exists():
+            drop_or_fail(
+                "requires_mtp",
+                "need the MTP sidecar, which does not exist at:\n  "
+                + str(head)
+                + "\nBuild it with ./run_bench.sh prep-mtp (downloads ~10 GB), or pass an "
+                "existing --mtp-head PATH. To measure without MTP, use --arms without "
+                "the mtp* names.",
+            )
+        if not cfg.gptq_model:
+            drop_or_fail(
+                "requires_gptq",
+                "need a GPTQ (int4) checkpoint; pass --gptq-model PATH to a quantised "
+                "copy of tencent/WeMM-Video-35BA3B. The gptq* arms measure that checkpoint.",
+            )
 
     mtp_config_broken = False
     if not args.self_test and any(a.requires_mtp for a in arms):
@@ -216,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(render_commands(cfg, arms))
         print(f"# model: {cfg.model}")
+        print(f"# gptq model: {cfg.gptq_model or '(none)'}")
         print(f"# mtp head: {cfg.mtp_head}")
         print(f"# arms: {', '.join(a.name for a in arms)}")
         print(
@@ -270,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     if not args.self_test:
-        check_gpu_idle(args.allow_busy_gpu, args.wait_gpu)
+        check_gpu_idle(args.allow_busy_gpu, args.wait_gpu, cfg.tp_size)
 
     print_rule("plan")
     for arm in arms:
@@ -305,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
             "arms": [a.name for a in arms],
             "config": {
                 "model": cfg.model,
+                "gptq_model": cfg.gptq_model,
                 "served_name": cfg.served_name,
                 "max_model_len": cfg.max_model_len,
                 "tp_size": cfg.tp_size,

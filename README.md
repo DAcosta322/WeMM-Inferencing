@@ -221,13 +221,22 @@ bounded: bad acceptance just means a slow arm, never wrong output.
 
 ## 4. Arms
 
-Default suite (3 servers, ~20 min):
+Default suite (servers: 3 for BF16 only; 7 with `--gptq-model`, ~20–50 min):
 
 | Arm | Extra flags | Question it answers | Measured |
 | --- | --- | --- | --- |
 | `baseline` | *(none)* | Out-of-the-box BF16, official recipe, TP=1 | **159.8 tok/s** |
+| `gptq` | `--quantization gptq_marlin` on a GPTQ checkpoint | int4 weights alone (lossy, ~1.4–1.5×) | needs `--gptq-model` |
 | `mtp3` | `--speculative-config {model,mtp,3}` | The main lever, K=3 | pending rerun |
+| `mtp3_tree` | `+ speculative_token_tree` (depth 3, branch 2, 14 nodes) | tree verification vs linear chain | pending |
+| `gptq_mtp3` | GPTQ + MTP K=3 | quantised target + speculation | pending |
+| `gptq_tree` | GPTQ + MTP tree | quantised target + tree verification | pending |
 | `baseline_recheck` | identical to `baseline`, run last | Noise floor for clocks and greedy output | **159.9 (1.00×)**, 100% identical |
+
+The `gptq*` arms need `--gptq-model PATH` (a GPTQ int4 checkpoint of WeMM; none is
+published, so quantise one offline first). The `mtp*`/`gptq_*` arms additionally need the
+MTP sidecar (`./run_bench.sh prep-mtp`). Missing prerequisites are dropped automatically on
+a default run and fail fast on an explicit `--arms` request.
 
 `--full` adds `mtp1`, `mtp5`, `mtp7`, `mtp3_fp8kv`, `single_seq`, `fp8kv`, `fp8kv_scaled`,
 `ngram` (negative result), `pin_flashinfer` (engine-init crash) and `eager` (graph
@@ -241,7 +250,8 @@ Two methodology points that came out of the runs:
 * **Quality is judged against a noise floor.** Greedy output is not bit-stable across server
   restarts (observed noise floors 99.7%, 64.0%, and 100% on the latest run). The default
   suite ends with `baseline_recheck`; the report compares full-output prefix and the first 64
-  tokens against it.
+  tokens against it. Quantised (`gptq*`) arms are lossy and are marked `claim=likely`, so
+  their exact-out column is informative, not a pass/fail.
 
 ---
 
@@ -556,8 +566,23 @@ cannot fit. No flag fixes that — the weights alone exceed the free memory.
    ```
    If MPS is enabled node-wide, ask for a free node or exclusive GPU access; re-requesting
    `--gres=gpu:1` may land on a free GPU.
-4. `--allow-busy-gpu` skips the check, but vLLM will OOM during weight loading next to a
-   37 GiB neighbour. It is only useful for small or quantised checkpoints.
+4. **TP=2 across both GPUs**, if you can allocate two. The official WeMM recipe splits the
+   ~69 GiB of weights into ~36 GiB per card, which fits beside a 37 GiB tenant:
+   ```bash
+   srun --gres=gpu:2 --mem=128G --pty ./run_bench.sh run --port 8010 \
+     --tp 2 --gpu-mem 0.55 --allow-busy-gpu --quick --arms baseline,mtp3
+   ```
+   This needs ~44 GiB free per GPU. It measures 2 GPUs, not the single-GPU target in the
+   brief; use it only if TP=1 is unobtainable.
+5. `--allow-busy-gpu` with TP=1 skips the check, but vLLM will OOM during weight loading next
+   to a 37 GiB neighbour. It is only useful for small or quantised checkpoints.
+
+**You cannot "clear" another process's VRAM.** CUDA allocations belong to the process that
+made them; `torch.cuda.empty_cache()` only releases the calling process's caching-allocator
+blocks, and the driver offers no way to reclaim a live process's memory. The harness will
+never kill or reset a foreign PID. On an MPS node, `--gres=gpu:1` allocates a Slurm slot but
+does **not** give you exclusive GPU memory — MPS lets other jobs remain resident on the same
+physical card, which is exactly what the 37 GiB tenant is.
 
 To see whether the other process belongs to a live job or is an orphan, check the node's
 queue; if `jtrentin` has no job on the node, the process leaked and only an admin (or that
@@ -740,6 +765,7 @@ bench/
   mock_server.py             OpenAI-compatible mock used by --self-test
 tests/test_mtp_builder.py    unit test for the sidecar builder (synthetic checkpoints)
 tests/test_gpu_sampler.py    regression test for thread teardown (Thread._stop shadowing)
+tests/test_variants.py       arm definitions, speculation tree, GPTQ flags
 results/selftest/            simulated demo output (clearly marked, not a measurement)
 ```
 

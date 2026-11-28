@@ -44,6 +44,9 @@ class ServerSnapshot:
     backends: list[str] = field(default_factory=list)
     cuda_graphs: bool | None = None
     speculative: dict | None = None
+    quantization: str | None = None
+    speculative_token_tree: str | None = None
+    tree_nodes: int | None = None
     tensor_parallel: int | None = None
     kv_cache_dtype: str | None = None
     max_model_len: int | None = None
@@ -59,6 +62,9 @@ class ServerSnapshot:
             "backends": self.backends,
             "cuda_graphs": self.cuda_graphs,
             "speculative": self.speculative,
+            "quantization": self.quantization,
+            "speculative_token_tree": self.speculative_token_tree,
+            "tree_nodes": self.tree_nodes,
             "tensor_parallel": self.tensor_parallel,
             "kv_cache_dtype": self.kv_cache_dtype,
             "max_model_len": self.max_model_len,
@@ -329,6 +335,10 @@ class ServerHandle:
                 )
                 if match:
                     snapshot.kv_cache_dtype = match.group(1)
+            # VllmConfig.__str__ prints `quantization=<method>` (and `...=None`).
+            quant_match = re.search(r"\bquantization=([a-z0-9_]+)", low)
+            if quant_match:
+                snapshot.quantization = quant_match.group(1)
             if "gpu blocks" in low or "gpu_blocks" in low:
                 match = re.search(r"gpu[_ ]blocks[=: ]+(\d+)", low)
                 if match:
@@ -356,14 +366,32 @@ class ServerHandle:
                     snapshot.warnings.append(line.strip()[:300])
 
         for line in lines:
-            match = re.search(r"num_speculative_tokens['\"]?\s*[:=]\s*(\d+)", line)
-            method = re.search(r"['\"]method['\"]\s*[:=]\s*['\"]([\w-]+)", line)
+            # VllmConfig.__str__ -> SpeculativeConfig(method='mtp', model='...',
+            # num_spec_tokens=3). Match both the repr field and the verbose name.
+            match = re.search(
+                r"num_spec(?:ulative)?_tokens['\"]?\s*[:=]\s*(\d+)", line
+            )
+            method = re.search(
+                r"['\"]?method['\"]?\s*[:=]\s*['\"]([\w-]+)", line
+            )
+            tree_match = re.search(
+                r"speculative_token_tree['\"]?\s*[:=]\s*(.+)", line
+            )
             if match or (method and "speculat" in line.lower()):
                 snapshot.speculative = snapshot.speculative or {}
                 if match:
                     snapshot.speculative["num_speculative_tokens"] = int(match.group(1))
                 if method and "speculat" in line.lower():
                     snapshot.speculative["method"] = method.group(1)
+            if tree_match and snapshot.speculative is not None:
+                tree = tree_match.group(1).strip().rstrip(",")
+                snapshot.speculative_token_tree = tree
+                try:
+                    import ast
+
+                    snapshot.tree_nodes = len(ast.literal_eval(tree))
+                except (ValueError, SyntaxError):
+                    snapshot.tree_nodes = None
         return snapshot
 
     @staticmethod
@@ -374,6 +402,9 @@ class ServerHandle:
             "backends",
             "cuda_graphs",
             "speculative",
+            "quantization",
+            "speculative_token_tree",
+            "tree_nodes",
             "tensor_parallel",
             "kv_cache_dtype",
             "max_model_len",
