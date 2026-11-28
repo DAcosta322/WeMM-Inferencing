@@ -88,15 +88,19 @@ onto WeMM's own `lm_head` + `embed_tokens`, producing a ~3.7 GB draft model that
 distribution, so quality is unchanged by construction; only the acceptance rate (and therefore
 the speedup) depends on the graft.
 
-vLLM 0.18.0 needs two small backports before any MTP arm can start — both are applied by
+vLLM 0.18.0 needs three small backports before the MTP and NVFP4 arms can start — all applied by
 `./run_bench.sh fix-mtp-config`:
 
 1. `transformers_utils/configs/qwen3_5_moe.py` passes a `list` to
    `ignore_keys_at_rope_validation`; transformers 5.2 expects a `set`.
 2. `v1/spec_decode/eagle.py` does not recognise WeMM architectures and reads
    `image_token_index`, which WeMM exposes as `image_token_id`.
+3. `model_executor/layers/quantization/modelopt.py` matches quantised layers by the exact
+   `quant_algo` string `"NVFP4"`, but Tencent's `-NVFP4` checkpoint (ModelOpt 0.45.0) writes
+   `"W4A16_NVFP4"` — so its quantised MoE experts are loaded as BF16 and engine init dies with
+   a weight shape mismatch. The backport matches `"NVFP4" in quant_algo`.
 
-Both are idempotent, keep `.orig` backups, and change no numerics.
+All are idempotent, keep `.orig` backups, and change no numerics.
 
 ### Weight quantisation
 
@@ -144,7 +148,7 @@ acceptance when the linear chain already accepts most tokens — measure it rath
 # 3. Build the MTP sidecar (~10 GB download from Qwen, ~3.7 GB on disk).
 ./run_bench.sh prep-mtp
 
-# 4. One-time vLLM 0.18.0 backports (rope config + eagle image-token classification).
+# 4. One-time vLLM 0.18.0 backports (rope config + eagle + modelopt NVFP4).
 ./run_bench.sh fix-mtp-config
 
 # 5. Measure (starts one server per arm; ~20 min default BF16 suite, ~50 min with quant arms).
@@ -256,7 +260,7 @@ srun --gres=gpu:1 --mem=96G --pty env BENCH_PYTHON="$HOME/.../.venv-vllm/bin/pyt
 | `run` | measure baseline + optimised arms, then write the report |
 | `report` | rebuild the report from existing results |
 | `self-test` | validate the pipeline with the mock server (no GPU) |
-| `fix-mtp-config` | backport the vLLM 0.18.0 Qwen3.5-MoE config fixes |
+| `fix-mtp-config` | backport the vLLM 0.18.0 config fixes (rope + eagle + modelopt NVFP4) |
 | `list-arms` | show arm names (marks missing prerequisites) |
 
 Common options (passed through to `bench.run_all`):
@@ -434,6 +438,21 @@ no numeric change. Revert with `python -m bench.fix_vllm_config --revert`.
 The FP8 KV path JIT-compiles an FP8 prefill kernel that fails to build on this box; FP8 KV
 measured +0.1% anyway. It is a `--full`-only negative result.
 
+### `nvfp4` arm fails with `RuntimeError: start (0) + length (512) exceeds dimension size (256)`
+
+Tencent's `-NVFP4` checkpoint (ModelOpt 0.45.0) writes `quant_algo: "W4A16_NVFP4"`, but
+vLLM 0.18.0's `modelopt_mixed` loader only recognises the exact string `"NVFP4"`. The
+quantised MoE experts are therefore loaded as plain BF16 and the weight load fails on the
+packed 4-bit shape. Fix (idempotent, `.orig` backup, no numeric change):
+
+```bash
+./run_bench.sh fix-mtp-config
+python -m bench.fix_vllm_config --check   # modelopt W4A16_NVFP4 must say fixed
+```
+
+This also makes the harness run `--quantization modelopt_mixed` (not `modelopt_fp4`) for the
+`nvfp4` method, matching the checkpoint's `MIXED_PRECISION` quant_algo.
+
 ### `OSError: libnppicc.so.12: cannot open shared object file`
 
 WeMM's processor imports `torchcodec.decoders` at model load, and torchcodec's CUDA build links
@@ -483,7 +502,7 @@ bench/
   prompts.py                 deterministic prompt suite + quality prompts
   client.py                  streaming client; TTFT/E2E/decode-TPS measurement
   server.py                  vLLM launch/health/metrics/log-evidence, GPU sampler
-  fix_vllm_config.py         backports the vLLM 0.18.0 Qwen3.5-MoE config fixes
+  fix_vllm_config.py         backports the vLLM 0.18.0 config fixes (rope + eagle + modelopt)
   variants.py                RunConfig + arm definitions (edit here to add an arm)
   measure.py                 one arm: warmup → quality → measured loop → teardown
   report.py                  report.md + summary.json (incl. quality diff and speedups)
@@ -496,7 +515,7 @@ tests/
   test_gpu_sampler.py        regression test for thread teardown
   test_variants.py           arm definitions, speculation tree, quantisation flags
   test_port_selection.py     port auto-advance / strict-port behaviour
-  test_vllm_fix.py           the two vLLM 0.18.0 backports
+  test_vllm_fix.py           the three vLLM 0.18.0 backports
 results/selftest/            simulated demo output (clearly marked, not a measurement)
 refsrc/                      unpacked vLLM 0.18.0 + WeMM sources used to author the patches
 ```
@@ -524,7 +543,7 @@ the resulting `results/selftest/report.md` is marked **SIMULATED**.
 
 - **Measured baseline: 159.8 tok/s (6.3 ms/token)** on the RTX Pro 6000 Blackwell, TRITON +
   CUDA graphs; a same-config recheck reproduced 159.9 with identical output.
-- **MTP has not yet produced a measurement** — two vLLM 0.18.0 gaps (now backported via
+- **MTP has not yet produced a measurement** — vLLM 0.18.0 gaps (now backported via
   `fix-mtp-config`) blocked it, and the acceptance-rate rerun is the remaining unknown.
 - **FP8 KV and n-gram speculation are negative results** (no gain / slower + diverging); they
   are kept only as `--full` diagnostics.

@@ -51,7 +51,7 @@ class QuantMethodTest(unittest.TestCase):
     def test_quant_flags_map_to_vllm_values(self) -> None:
         self.assertEqual(quant_flags("awq"), ["--quantization", "awq_marlin"])
         self.assertEqual(quant_flags("gptq"), ["--quantization", "gptq_marlin"])
-        self.assertEqual(quant_flags("nvfp4"), ["--quantization", "modelopt_fp4"])
+        self.assertEqual(quant_flags("nvfp4"), ["--quantization", "modelopt_mixed"])
         self.assertEqual(quant_flags("fp8"), ["--quantization", "fp8"])
 
 

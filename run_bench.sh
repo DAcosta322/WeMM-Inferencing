@@ -7,7 +7,7 @@
 #   ./run_bench.sh run         measure baseline + optimised arms, write report
 #   ./run_bench.sh report      rebuild the report from existing results
 #   ./run_bench.sh self-test   validate the harness with the mock server (no GPU)
-#   ./run_bench.sh fix-mtp-config  backport the vLLM 0.18.0 Qwen3.5-MoE config fix
+#   ./run_bench.sh fix-mtp-config  backport vLLM 0.18.0 (rope + eagle + modelopt NVFP4)
 #
 # An active venv is used automatically. Only set BENCH_PYTHON if you need a
 # different interpreter: BENCH_PYTHON="$(command -v python)" ./run_bench.sh env

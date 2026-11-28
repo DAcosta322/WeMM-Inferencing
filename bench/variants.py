@@ -54,9 +54,9 @@ QUANT_METHODS: dict[str, QuantMethod] = {
         "already exists.",
     ),
     "nvfp4": QuantMethod(
-        "nvfp4", "modelopt_fp4", "NVFP4 (W4A16, Blackwell)", 4,
-        "Native sm_120 4-bit weights (per-block float scales); best Blackwell "
-        "bandwidth/compute, but needs a Model Optimizer checkpoint.",
+        "nvfp4", "modelopt_mixed", "NVFP4 (W4A16, Blackwell)", 4,
+        "Tencent's -NVFP4 checkpoint is ModelOpt MIXED_PRECISION (NVFP4 experts, BF16 "
+        "elsewhere); needs the modelopt_mixed vLLM method plus the W4A16_NVFP4 backport.",
     ),
     "gptq": QuantMethod(
         "gptq", "gptq_marlin", "GPTQ int4 (W4A16)", 4,

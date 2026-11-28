@@ -1,6 +1,6 @@
-"""Backports for vLLM 0.18.0 so the WeMM + MTP draft path can start.
+"""Backports for vLLM 0.18.0 so the WeMM MTP + quantised checkpoints can start.
 
-Two independent defects, both hit on the target GPU:
+Three independent defects, all hit on the target GPU:
 
 1. ``vllm/transformers_utils/configs/qwen3_5_moe.py`` passes a **list** to
    ``ignore_keys_at_rope_validation``; transformers 5.2 expects a set and raises
@@ -12,9 +12,15 @@ Two independent defects, both hit on the target GPU:
    it falls through to ``target_model.config.image_token_index``. WeMM's config
    has ``image_token_id``, so it raises
    ``AttributeError: 'WeMMQwen3_5MoeConfig' object has no attribute 'image_token_index'``.
-   WeMM is a Qwen3.5-MoE derivative and uses the same token fields.
 
-Both edits are idempotent, keep a ``.orig`` backup, and do not change numerics.
+3. ``vllm/model_executor/layers/quantization/modelopt.py``'s
+   ``ModelOptMixedPrecisionConfig`` routes quantised layers by exact ``quant_algo``
+   match (``== "NVFP4"``). Tencent's ``-NVFP4`` checkpoint was produced by ModelOpt
+   0.45.0 and writes the full name ``W4A16_NVFP4``, so the quantised MoE experts are
+   loaded as plain BF16 and engine init dies with
+   ``RuntimeError: start (0) + length (512) exceeds dimension size (256)``.
+
+All edits are idempotent, keep a ``.orig`` backup, and do not change numerics.
 
 Usage (with the serving venv python):
 
@@ -54,6 +60,16 @@ EAGLE_NEW = (
 )
 EAGLE_FIXED_MARKER = "WeMMVideoMoeForConditionalGeneration"
 
+# --- fix 3: recognise ModelOpt 0.45 ``W4A16_NVFP4`` quant_algo -----------------
+# get_quant_method routes by exact string match; Tencent's checkpoint says
+# "W4A16_NVFP4" (upper-cased). Match by substring so both "NVFP4" and
+# "W4A16_NVFP4" resolve to the NVFP4 method.
+MODELOPT_NVFP4_OLD = 'quant_algo == "NVFP4"'
+MODELOPT_NVFP4_NEW = '"NVFP4" in quant_algo'
+MODELOPT_GROUP_OLD = 'layer_info.get("quant_algo", "").upper() == "NVFP4"'
+MODELOPT_GROUP_NEW = '"NVFP4" in layer_info.get("quant_algo", "").upper()'
+MODELOPT_FIXED_MARKER = '"NVFP4" in quant_algo'
+
 
 def _vllm_root() -> Path | None:
     try:
@@ -73,6 +89,15 @@ def find_config_file() -> Path | None:
 def find_eagle_file() -> Path | None:
     root = _vllm_root()
     return root / "v1" / "spec_decode" / "eagle.py" if root else None
+
+
+def find_modelopt_file() -> Path | None:
+    root = _vllm_root()
+    return (
+        root / "model_executor" / "layers" / "quantization" / "modelopt.py"
+        if root
+        else None
+    )
 
 
 def _read(path: Path) -> str:
@@ -180,6 +205,58 @@ def revert_eagle(path: Path | None = None) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# fix 3
+# ---------------------------------------------------------------------------
+
+
+def modelopt_status(path: Path | None = None) -> str:
+    path = path or find_modelopt_file()
+    if path is None or not path.exists():
+        return "missing"
+    text = _read(path)
+    if MODELOPT_FIXED_MARKER in text:
+        return "fixed"
+    if MODELOPT_NVFP4_OLD in text or MODELOPT_GROUP_OLD in text:
+        return "buggy"
+    return "unknown"
+
+
+def apply_modelopt_fix(path: Path | None = None) -> tuple[bool, str]:
+    path = path or find_modelopt_file()
+    if path is None or not path.exists():
+        return False, "vllm/model_executor/layers/quantization/modelopt.py not found"
+    current = modelopt_status(path)
+    if current == "fixed":
+        return True, f"already fixed: {path}"
+    if current != "buggy":
+        return False, f"unrecognised file layout, not touched: {path}"
+    text = _read(path)
+    n_nvfp4 = text.count(MODELOPT_NVFP4_OLD)
+    n_group = text.count(MODELOPT_GROUP_OLD)
+    if n_nvfp4 < 2:
+        return False, (
+            f"expected two 'quant_algo == \"NVFP4\"' sites in get_quant_method, "
+            f"found {n_nvfp4}; not touched"
+        )
+    _backup(path)
+    text = text.replace(MODELOPT_NVFP4_OLD, MODELOPT_NVFP4_NEW)
+    text = text.replace(MODELOPT_GROUP_OLD, MODELOPT_GROUP_NEW)
+    path.write_text(text, encoding="utf-8")
+    return True, f"patched {path} ({n_nvfp4} get_quant_method + {n_group} group_size sites)"
+
+
+def revert_modelopt(path: Path | None = None) -> tuple[bool, str]:
+    path = path or find_modelopt_file()
+    if path is None:
+        return False, "not found"
+    backup = path.with_suffix(path.suffix + ".orig")
+    if not backup.exists():
+        return False, f"no backup at {backup}"
+    shutil.copy2(backup, path)
+    return True, f"reverted {path} from {backup}"
+
+
+# ---------------------------------------------------------------------------
 # validation
 # ---------------------------------------------------------------------------
 
@@ -209,34 +286,45 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--revert", action="store_true", help="restore the .orig backups")
     parser.add_argument("--path", default=None, help="override qwen3_5_moe.py (testing)")
     parser.add_argument("--eagle-path", default=None, help="override eagle.py (testing)")
+    parser.add_argument("--modelopt-path", default=None, help="override modelopt.py (testing)")
     parser.add_argument("--validate", default=None, help="MTP sidecar directory to load afterwards")
     args = parser.parse_args(argv)
 
     qwen = Path(args.path) if args.path else find_config_file()
     eagle = Path(args.eagle_path) if args.eagle_path else find_eagle_file()
+    modelopt = Path(args.modelopt_path) if args.modelopt_path else find_modelopt_file()
     if qwen is None:
         print("error: vllm is not importable from this Python", file=sys.stderr)
         return 2
 
     if args.check:
         q_state, e_state = status(qwen), eagle_status(eagle)
+        m_state = modelopt_status(modelopt)
         print(f"qwen3_5_moe rope params: {q_state}: {qwen}")
         print(f"eagle WeMM image token:  {e_state}: {eagle}")
-        return 0 if "buggy" not in (q_state, e_state) else 1
+        print(f"modelopt W4A16_NVFP4:    {m_state}: {modelopt}")
+        return 0 if "buggy" not in (q_state, e_state, m_state) else 1
 
     if args.revert:
         ok1, msg1 = revert(qwen)
         print(msg1)
         ok2, msg2 = revert_eagle(eagle) if eagle else (False, "eagle.py not found")
         print(msg2)
-        return 0 if (ok1 and ok2) else 1
+        ok3, msg3 = revert_modelopt(modelopt) if modelopt else (False, "modelopt.py not found")
+        print(msg3)
+        return 0 if (ok1 and ok2 and ok3) else 1
 
     ok1, msg1 = apply_fix(qwen)
     print(msg1)
     ok2, msg2 = apply_eagle_fix(eagle)
     print(msg2)
-    print(f"status: qwen={status(qwen)} eagle={eagle_status(eagle)}")
-    if not (ok1 and ok2):
+    ok3, msg3 = apply_modelopt_fix(modelopt)
+    print(msg3)
+    print(
+        f"status: qwen={status(qwen)} eagle={eagle_status(eagle)} "
+        f"modelopt={modelopt_status(modelopt)}"
+    )
+    if not (ok1 and ok2 and ok3):
         return 1
     if args.validate:
         ok, message = validate(Path(args.validate))

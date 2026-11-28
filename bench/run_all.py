@@ -249,8 +249,13 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     mtp_config_broken = False
-    if not args.self_test and any(a.requires_mtp for a in arms):
-        from .fix_vllm_config import eagle_status, status as vllm_config_status
+    quant_config_broken = False
+    if not args.self_test and (any(a.requires_mtp for a in arms) or any(a.requires_quant for a in arms)):
+        from .fix_vllm_config import (
+            eagle_status,
+            modelopt_status,
+            status as vllm_config_status,
+        )
 
         qwen_state, eagle_state = vllm_config_status(), eagle_status()
         if qwen_state == "buggy" or eagle_state == "buggy":
@@ -259,6 +264,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"MTP preflight: vLLM backports missing (rope={qwen_state}, "
                 f"eagle={eagle_state}); run ./run_bench.sh fix-mtp-config"
             )
+        # The modelopt W4A16_NVFP4 backport is only needed by the NVFP4 checkpoint.
+        if args.quant_method == "nvfp4" and any(a.requires_quant for a in arms):
+            m_state = modelopt_status()
+            if m_state == "buggy":
+                quant_config_broken = True
+                log(
+                    "NVFP4 preflight: modelopt W4A16_NVFP4 backport missing; "
+                    "run ./run_bench.sh fix-mtp-config"
+                )
 
     if args.dry_run:
         print(render_commands(cfg, arms))
@@ -307,6 +321,19 @@ def main(argv: list[str] | None = None) -> int:
             )
             print()
             raise SystemExit("preflight: MTP config backport missing")
+        if quant_config_broken and not args.skip_preflight:
+            print()
+            print(
+                "NVFP4 arms cannot start: vLLM 0.18.0's modelopt loader does not "
+                "recognise the 'W4A16_NVFP4' quant_algo that Tencent's -NVFP4 "
+                "checkpoint uses, so its quantised MoE experts are loaded as BF16 and "
+                "engine init dies with a weight shape mismatch.\n"
+                "Apply the backport with:\n"
+                "  ./run_bench.sh fix-mtp-config\n"
+                "then rerun (or pass --skip-preflight to measure the other arms anyway)."
+            )
+            print()
+            raise SystemExit("preflight: modelopt W4A16_NVFP4 backport missing")
         if env.get("torchcodec_ok") is False:
             print()
             print(env_check.torchcodec_fix(env))
