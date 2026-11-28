@@ -82,9 +82,11 @@ class ChatClient:
         model: str,
         connect_timeout: float = 30.0,
         read_timeout: float = 900.0,
+        system_prompt: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.system_prompt = system_prompt
         self.timeout = (connect_timeout, read_timeout)
         self.session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=4)
@@ -150,9 +152,13 @@ class ChatClient:
         seed: int = 0,
         extra: dict | None = None,
     ) -> dict:
+        messages: list[dict] = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.append({"role": "user", "content": prompt})
         body = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "top_p": 1.0,

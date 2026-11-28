@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .server import ServerSnapshot
-from .variants import QUANT_METHODS, TREE_BRANCHING, TREE_DEPTH, tree_spec_string
+from .variants import QUANT_METHODS, TREE_BRANCHING, tree_spec_string
 
 # Simulated per-arm profiles. ``ms_per_token`` drives the streamed latency and is
 # rebased on the measured BF16 baseline (6.3 ms/token, 159.8 tok/s); ``accept`` is
@@ -42,6 +42,17 @@ PROFILES: dict[str, dict] = {
     "single_seq": {"ms_per_token": 2.44, "ttft_ms": 200, "accept": 0.65, "k": 3},
     "ngram": {"ms_per_token": 7.7, "ttft_ms": 200, "accept": 0.25, "k": 4},
     "eager": {"ms_per_token": 8.5, "ttft_ms": 210, "accept": 0.0, "k": 0},
+    # Optimisation-idea arms (3/4/5/6). Placeholders, NOT measurements.
+    "moe_triton": {"ms_per_token": 6.3, "ttft_ms": 202, "accept": 0.0, "k": 0},
+    "moe_flashinfer_trtllm": {"ms_per_token": 5.9, "ttft_ms": 201, "accept": 0.0, "k": 0},
+    "moe_flashinfer_cutlass": {"ms_per_token": 6.0, "ttft_ms": 201, "accept": 0.0, "k": 0},
+    "o0": {"ms_per_token": 8.5, "ttft_ms": 210, "accept": 0.0, "k": 0},
+    "o1": {"ms_per_token": 6.5, "ttft_ms": 205, "accept": 0.0, "k": 0},
+    "o3": {"ms_per_token": 6.3, "ttft_ms": 202, "accept": 0.0, "k": 0},
+    "compile_cfg": {"ms_per_token": 6.3, "ttft_ms": 202, "accept": 0.0, "k": 0},
+    "prefix_cache": {"ms_per_token": 6.3, "ttft_ms": 130, "accept": 0.0, "k": 0, "prefix_cache": True},
+    "mtp5_tree": {"ms_per_token": 2.0, "ttft_ms": 200, "accept": 0.10, "k": 5, "tree": True},
+    "mtp7_tree": {"ms_per_token": 2.1, "ttft_ms": 200, "accept": 0.06, "k": 7, "tree": True},
 }
 
 # Simulated per-token latency for each weight-quantisation method (placeholder).
@@ -336,16 +347,23 @@ class MockHandle:
             method = "ngram" if self.arm_name == "ngram" else "mtp"
             spec = {"method": method, "num_speculative_tokens": k}
             if self.profile.get("tree"):
-                tree = tree_spec_string(TREE_DEPTH, TREE_BRANCHING)
+                tree = tree_spec_string(k, TREE_BRANCHING)
                 tree_nodes = _draft_nodes(self.profile)
         quant = self.profile.get("quant_method")
+        moe = self.arm_name[4:] if self.arm_name.startswith("moe_") else None
+        opt = self.arm_name[1:] if self.arm_name in ("o0", "o1", "o3") else None
+        prefix = bool(self.profile.get("prefix_cache"))
         return MockSnapshot(
             attention_backend="FLASHINFER",
-            cuda_graphs=self.arm_name != "eager",
+            cuda_graphs=self.arm_name not in ("eager", "o0"),
             speculative=spec,
             quantization=quant,
             speculative_token_tree=tree,
             tree_nodes=tree_nodes,
+            moe_backend=moe,
+            prefix_caching=prefix or None,
+            optimization_level=opt,
+            compilation_config=self.profile.get("compilation_config"),
             tensor_parallel=1,
             kv_cache_dtype="fp8" if "fp8" in self.arm_name else "auto",
             max_model_len=8192,

@@ -36,6 +36,8 @@ from .measure import MeasureContext, check_gpu_idle, run_arm
 from .mock_server import MockHandle
 from .report import build_report
 from .variants import (
+    MOE_BACKENDS,
+    OPT_LEVELS,
     QUANT_METHODS,
     RunConfig,
     build_arms,
@@ -96,6 +98,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=tuple(QUANT_METHODS),
         help="weight-quantisation method to benchmark (default: %(default)s)",
     )
+    parser.add_argument(
+        "--moe-backend",
+        default=None,
+        choices=MOE_BACKENDS,
+        help="add a single 'moe_<backend>' arm with --moe-backend <backend> "
+        "(unquantised BF16 only supports triton/flashinfer_trtllm/flashinfer_cutlass)",
+    )
+    parser.add_argument(
+        "--opt-level",
+        type=int,
+        default=None,
+        choices=OPT_LEVELS,
+        help="add a single 'o<N>' arm with --optimization-level <N> (vLLM -O0..-O3)",
+    )
+    parser.add_argument(
+        "--compilation-config",
+        default=None,
+        help="add a single 'compile_cfg' arm with --compilation-config <JSON>",
+    )
+    parser.add_argument(
+        "--prefix-caching",
+        action="store_true",
+        help="add a 'prefix_cache' arm (--enable-prefix-caching + fixed system prompt)",
+    )
     parser.add_argument("--prepare-mtp", action="store_true", help="build the MTP sidecar before running")
     parser.add_argument("--only-prepare", action="store_true")
     parser.add_argument("--results-dir", default=None)
@@ -152,6 +178,10 @@ def main(argv: list[str] | None = None) -> int:
         max_tokens=args.max_tokens,
         reps=args.reps if args.reps is not None else (1 if args.self_test else (2 if args.quick else 5)),
         warmup=args.warmup if args.warmup is not None else (0 if args.self_test else 2),
+        moe_backend=args.moe_backend,
+        opt_level=args.opt_level,
+        compilation_config=args.compilation_config,
+        prefix_caching=args.prefix_caching,
     )
 
     if args.report_only:
@@ -211,7 +241,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{arm.name:16s} {arm.kind:10s} {arm.label}{suffix}")
         return 0
 
-    arms = select_arms(arms, args.arms)
+    # `--full` means "run the whole suite", including the diagnostic arms
+    # (eager, pin_flashinfer, o0) that a plain `default` selection would drop.
+    selection = args.arms
+    if args.full and selection in (None, "default"):
+        selection = "all"
+    arms = select_arms(arms, selection)
     if not arms:
         raise SystemExit("no arms selected")
 
@@ -309,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
         if mtp_config_broken and not args.skip_preflight:
             print()
             print(
-                "MTP arms cannot start: vLLM 0.18.0 needs two backports.\n"
+                "MTP arms cannot start: this vLLM needs two backports.\n"
                 "  1. transformers_utils/configs/qwen3_5_moe.py passes a list to\n"
                 "     ignore_keys_at_rope_validation; transformers 5.2 expects a set.\n"
                 "  2. v1/spec_decode/eagle.py does not recognise WeMM architectures, so it\n"
@@ -317,7 +352,8 @@ def main(argv: list[str] | None = None) -> int:
                 "     (it uses image_token_id).\n"
                 "Apply both with:\n"
                 "  ./run_bench.sh fix-mtp-config\n"
-                "then rerun (or pass --skip-preflight to measure the other arms anyway)."
+                "then rerun (or pass --skip-preflight to measure the other arms anyway).\n"
+                "Patched vLLM 0.31.0 carries these fixes natively and needs no backport."
             )
             print()
             raise SystemExit("preflight: MTP config backport missing")
@@ -390,6 +426,10 @@ def main(argv: list[str] | None = None) -> int:
                 "warmup": cfg.warmup,
                 "max_tokens": cfg.max_tokens,
                 "mtp_head": str(cfg.mtp_head) if cfg.mtp_head else None,
+                "moe_backend": cfg.moe_backend,
+                "opt_level": cfg.opt_level,
+                "compilation_config": cfg.compilation_config,
+                "prefix_caching": cfg.prefix_caching,
             },
         },
     )

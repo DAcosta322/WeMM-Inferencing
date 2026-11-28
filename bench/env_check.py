@@ -108,6 +108,29 @@ def _vllm_patch_status() -> dict:
     return status
 
 
+def _backport_status() -> dict:
+    """Report the three vLLM 0.18.0 backport statuses.
+
+    Patched vLLM 0.31.0 carries the Qwen3.5-MoE rope fix natively, so on a
+    0.31.0 install these read ``fixed``/``unknown`` (never ``buggy``) and no
+    ``fix-mtp-config`` pass is required.
+    """
+    try:
+        from .fix_vllm_config import eagle_status, modelopt_status, status as rope_status
+    except Exception:  # noqa: BLE001 - a broken vllm install must not hide other probes
+        return {}
+    rope = rope_status()
+    eagle = eagle_status()
+    modelopt = modelopt_status()
+    return {
+        "rope_backport": rope,
+        "eagle_backport": eagle,
+        "modelopt_backport": modelopt,
+        "mtp_backports_needed": rope == "buggy" or eagle == "buggy",
+        "nvfp4_backport_needed": modelopt == "buggy",
+    }
+
+
 def collect(model: str | None = None, port: int = 8000) -> dict:
     gpus = gpu_inventory()
     _port_free = port_is_free(port)
@@ -149,6 +172,7 @@ def collect(model: str | None = None, port: int = 8000) -> dict:
         "bench_port_holder": None if _port_free else describe_port_holder(port),
     }
     env.update(_vllm_patch_status())
+    env.update(_backport_status())
     env["cuda"] = env.get("cuda") or env.get("torch_cuda")
     env.update(_npp_fields())
     codec_ok, codec_error = _torchcodec_probe()
@@ -188,6 +212,12 @@ def _problems(env: dict) -> list[str]:
         problems.append("vllm is not installed in this Python environment")
     if env.get("vllm") and not env.get("wemm_registered"):
         problems.append("WeMM patch not detected in the vllm package (registry.py)")
+    if env.get("vllm") and env.get("mtp_backports_needed"):
+        problems.append(
+            "vLLM MTP backports are missing (rope/eagle); run "
+            "./run_bench.sh fix-mtp-config, or use patched vLLM 0.31.0 which "
+            "carries the Qwen3.5-MoE fixes natively"
+        )
     if not env.get("flashinfer"):
         problems.append("flashinfer-python is not installed (FlashInfer backend unavailable)")
     if env.get("bench_port_free") is False:

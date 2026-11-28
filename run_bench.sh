@@ -89,7 +89,7 @@ fi
 
 usage() {
   cat <<'EOF'
-WeMM-Video-35B-A3B decode-TPS benchmark.  [harness 1.3.0 / 2026-11-28-quant]
+WeMM-Video-35B-A3B decode-TPS benchmark.  [harness 1.4.0 / 2026-11-28-opt-ideas]
 
   ./run_bench.sh env         probe GPU / vLLM / FlashInfer / WeMM patch
   ./run_bench.sh dry-run     print the exact server command for every arm
@@ -106,13 +106,17 @@ An active venv is picked automatically. BENCH_PYTHON="$(command -v python)"
 overrides it; do not paste placeholder paths like /path/to/... into it.
 
 Common options (passed through to bench.run_all):
-  --full                 include MTP K=5/K=7, n-gram and eager diagnostic arms
+  --full                 include MTP K=5/K=7, MoE/opt-level sweeps, n-gram, eager
   --quick                fewer repetitions
   --arms a,b,c           run only the named arms
   --list-arms            show arm names
   --mtp-head PATH        use an existing sidecar instead of results/mtp_head
   --quant-model PATH     enable the <quant>* arms against a quantised checkpoint
   --quant-method METHOD  awq|nvfp4|gptq|fp8 (default awq)
+  --moe-backend NAME     add one 'moe_<name>' arm (--moe-backend NAME)
+  --opt-level N          add one 'o<N>' arm (vLLM -O0..-O3)
+  --compilation-config J add one 'compile_cfg' arm (--compilation-config JSON)
+  --prefix-caching       add a 'prefix_cache' arm (system prompt + prefix cache)
   --gpu-mem 0.90         vLLM --gpu-memory-utilization (per GPU)
   --tp 2                 tensor parallel / GPU count (official WeMM recipe uses 2)
   --port 8000            preferred port; auto-advances if busy (--strict-port to fail)

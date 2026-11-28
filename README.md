@@ -6,7 +6,7 @@ on a single **NVIDIA RTX PRO 6000 Blackwell** (single-user). It runs a server pe
 configuration ("arm"), measures decode TPS end-to-end with a streaming client, verifies output
 quality, and writes a Markdown report plus a machine-readable `summary.json`.
 
-The current build id is `1.3.0 / 2026-11-28-quant` (`./run_bench.sh help` prints it).
+The current build id is `1.4.0 / 2026-11-28-opt-ideas` (`./run_bench.sh help` prints it).
 
 - **Everything is stdlib + `requests`** (already in the vLLM venv). Only the MTP sidecar
   builder additionally needs `torch`, `safetensors` and `huggingface_hub`.
@@ -133,6 +133,21 @@ The `*_tree` arms add a `speculative_token_tree` (depth 3, branching 2 → 14 no
 speculative config, so one target forward verifies a *tree* of candidates instead of a linear
 chain. This hedges near-tie decisions, but the extra verification cost can offset the extra
 acceptance when the linear chain already accepts most tokens — measure it rather than assume.
+The `--full` suite extends this to depth 5 and 7 (`mtp5_tree` / `mtp7_tree`, 62 / 254 nodes).
+
+### Kernel, compilation and caching knobs
+
+Three further ideas are wired in as opt-in arms rather than defaults:
+
+- **MoE backend** (`--moe-backend`, and `--full`'s `moe_*` sweep): on Blackwell the FlashInfer
+  TRTLLM/CUTLASS expert kernels can beat the default Triton path; unquantised BF16 accepts
+  `triton`, `flashinfer_trtllm` and `flashinfer_cutlass`.
+- **Compilation / `-O` levels** (`--opt-level N`, `--compilation-config JSON`, and `--full`'s
+  `o3`/`o0`): the hybrid GDN + linear-attention stack may only partially compile, so these
+  isolate what torch.compile and the `-O` stack actually buy.
+- **Prefix caching** (`--prefix-caching`): enables `--enable-prefix-caching` and prepends a fixed
+  system prompt so the shared prefix's KV cache is reused — a production TTFT win that does not
+  change decode TPS.
 
 ---
 
@@ -221,6 +236,22 @@ A healthy `./run_bench.sh env` looks like: `vllm: 0.18.0`, `flashinfer: 0.6.6`,
 `wemm_registered: true`, `mtp_registered: true`, `npp_lib_present: true`,
 `torchcodec_ok: true`, `problems: []`.
 
+### vLLM 0.31.0 (alternative environment, idea 8)
+
+The three `fix-mtp-config` backports exist only because vLLM 0.18.0 predates the
+Qwen3.5-MoE/WeMM fixes. Patched vLLM 0.31.0 carries them natively and ships newer Blackwell
+kernels, at the cost of a fresh environment (PyTorch 2.13). To run the same harness against it,
+build a 0.31.0 venv the same way and point `BENCH_PYTHON` at it:
+
+```bash
+BENCH_PYTHON="/path/to/vllm031-venv/bin/python" ./run_bench.sh env     # rope/eagle backports report fixed/unknown, not buggy
+BENCH_PYTHON="/path/to/vllm031-venv/bin/python" ./run_bench.sh run
+```
+
+The harness is version-aware: `env` reports `rope_backport` / `eagle_backport` /
+`modelopt_backport` plus `mtp_backports_needed`, and the preflight only demands the backports
+when the installed vLLM actually needs them. On 0.31.0, skip `fix-mtp-config` entirely.
+
 ### Extract at the harness root
 
 Extract/run this directory **at its root** — the directory that contains `results/` — never
@@ -267,12 +298,16 @@ Common options (passed through to `bench.run_all`):
 
 | Option | Meaning |
 |---|---|
-| `--full` | add the K=1/5/7 sweep, n-gram, eager, single-seq, scaled-FP8 diagnostics |
+| `--full` | run the whole suite: MTP K=1/5/7 + deeper tree sweep, MoE/opt-level sweeps, n-gram, eager, single-seq, FP8-KV diagnostics |
 | `--quick` | 2 repetitions instead of 5 |
 | `--arms a,b,c` | run only the named arms |
 | `--mtp-head PATH` | use an existing sidecar instead of `results/mtp_head` |
 | `--quant-model PATH` | enable the `<quant>*` arms against a quantised checkpoint |
 | `--quant-method M` | `awq` (default) \| `nvfp4` \| `gptq` \| `fp8` |
+| `--moe-backend NAME` | add one `moe_<name>` arm with `--moe-backend NAME` (idea 3) |
+| `--opt-level N` | add one `o<N>` arm with `--optimization-level N` (vLLM `-O0..-O3`) (idea 4) |
+| `--compilation-config J` | add one `compile_cfg` arm with `--compilation-config JSON` (idea 4) |
+| `--prefix-caching` | add a `prefix_cache` arm: prefix caching + fixed system prompt (idea 6) |
 | `--gpu-mem 0.90` | vLLM `--gpu-memory-utilization` (per GPU) |
 | `--tp 2` | tensor parallel / GPU count (official WeMM recipe uses 2) |
 | `--port 8000` | preferred port; auto-advances if busy (`--strict-port` to fail) |
@@ -289,6 +324,10 @@ Useful invocations:
 ./run_bench.sh run --quant-model tencent/WeMM-Video-35BA3B-AWQ     # quantised arms (default AWQ)
 ./run_bench.sh run --quant-method nvfp4 --quant-model tencent/WeMM-Video-35BA3B-NVFP4
 ./run_bench.sh run --quant-method fp8 --quant-model tencent/WeMM-Video-35BA3B-FP8
+./run_bench.sh run --moe-backend flashinfer_trtllm --arms moe_flashinfer_trtllm
+./run_bench.sh run --opt-level 3 --arms o3
+./run_bench.sh run --compilation-config '{"mode":3}' --arms compile_cfg
+./run_bench.sh run --prefix-caching --arms prefix_cache
 ./run_bench.sh run --custom-flags "--moe-backend ..." --arms custom
 ./run_bench.sh self-test
 ```
@@ -310,9 +349,23 @@ selected `--quant-method` (default `awq`):
 | `<quant>_tree` | quantised + MTP tree | opt | likely |
 | `baseline_recheck` | identical to `baseline`, run last | opt | noise floor |
 
-`--full` additionally adds `mtp1`, `mtp5`, `mtp7`, `mtp3_fp8kv`, `single_seq`, `fp8kv`,
-`fp8kv_scaled`, `ngram` (negative result), `pin_flashinfer` (diagnostic) and `eager`
-(diagnostic).
+`--full` additionally adds `mtp1`, `mtp5`, `mtp7`, `mtp5_tree`, `mtp7_tree`, `mtp3_fp8kv`,
+`single_seq`, `fp8kv`, `fp8kv_scaled`, `ngram` (negative result), the unquantised MoE sweep
+(`moe_triton`, `moe_flashinfer_trtllm`, `moe_flashinfer_cutlass`), the optimisation-level
+sweep (`o3`, and `o0` as a diagnostic), plus `pin_flashinfer` and `eager` (diagnostics).
+
+Opt-in single arms (one per explicit knob, additive on the BF16 baseline):
+
+| Arm | Flags | Kind | Claim |
+|---|---|---|---|
+| `moe_<name>` | `--moe-backend <name>` (via `--moe-backend NAME`) | opt | exact |
+| `o<N>` | `--optimization-level <N>` (via `--opt-level N`) | opt / diagnostic | exact |
+| `compile_cfg` | `--compilation-config <JSON>` (via `--compilation-config J`) | opt | exact |
+| `prefix_cache` | `--enable-prefix-caching` + fixed system prompt (via `--prefix-caching`) | opt | no |
+
+`--prefix-caching` is a **TTFT / production** optimisation, not a decode-TPS one: it does not
+change decode TPS by construction (TTFT is subtracted from the metric) and the added system
+prompt changes the output, so its quality gate is marked "not claimed".
 
 Methodology notes baked into the defaults:
 
@@ -356,7 +409,8 @@ Report fields:
 - **Exact-out** — token-identical rate vs baseline on the four quality prompts, read against the
   noise-floor row (`baseline_recheck`).
 - **What actually ran** — parsed from the log (backend, CUDA graphs, speculative config,
-  quantization, TP, KV dtype); flags are requests, logs are evidence.
+  quantization, MoE backend, optimization level, prefix caching, TP, KV dtype); flags are
+  requests, logs are evidence.
 
 `--full` also runs `eager`, the honest way to report what CUDA graphs contribute:
 `baseline / eager` is the graph benefit, `flashinfer / baseline` the backend benefit, etc.
@@ -475,20 +529,28 @@ is needed. If CUDA comes from a module instead of a wheel, the equivalent is
 
 ## Further optimisation ideas
 
-Not in the default suite; cheap to test with `--custom-flags`:
+Ideas 3, 4, 5, 6 and 8 are now implemented as first-class arms/flags (see [Arms](#arms)
+and the [CLI reference](#cli-reference)); the rest remain cheap to test with `--custom-flags`:
 
 1. **`--max-num-seqs 1` + `--max-num-batched-tokens 8192`** for single-user latency.
+   (The `single_seq` `--full` arm already pairs MTP K=3 with `--max-num-seqs 1`.)
 2. **`--async-scheduling`** — reduces scheduler bubbles between steps.
-3. **MoE/linear backend selection** (`--moe-backend …`) — CUTLASS/FlashInfer MoE kernels can
-   beat the default Triton path on Blackwell; measure rather than assume.
-4. **Compilation config** (`--compilation-config`, `-O3`-style levels) — the hybrid GDN stack
-   may only partially compile.
-5. **Deeper MTP chains / tree speculation** if acceptance stays high at K=5–7.
-6. **Prefix caching + a fixed system prompt** cuts TTFT in production (disabled here; it does
-   not change decode TPS).
-7. **CUDA graph mode tuning** once the baseline is known.
-8. **Patched vLLM 0.31.0** — carries the Qwen3.5-MoE config fix natively and newer Blackwell
-   kernels, at the cost of a new environment (PyTorch 2.13).
+3. ✅ **MoE/linear backend selection** — `--moe-backend NAME` (single arm) and the `--full`
+   `moe_triton` / `moe_flashinfer_trtllm` / `moe_flashinfer_cutlass` sweep. Unquantised BF16
+   supports `triton`, `flashinfer_trtllm` and `flashinfer_cutlass`; the CUTLASS/TRTLLM kernels
+   can beat Triton on Blackwell — measure rather than assume.
+4. ✅ **Compilation config / `-O` levels** — `--opt-level N` (`o<N>` arm, vLLM `-O0..-O3`) and
+   `--compilation-config JSON` (`compile_cfg` arm). The `--full` sweep adds `o3` and the `o0`
+   diagnostic, which isolates what the whole `-O` stack contributes.
+5. ✅ **Deeper MTP chains / tree speculation** — the `--full` suite now adds `mtp5_tree` and
+   `mtp7_tree` (depth 5/7, branch 2 → 62/254 nodes) alongside the existing linear `mtp5`/`mtp7`.
+6. ✅ **Prefix caching + a fixed system prompt** — `--prefix-caching` adds the `prefix_cache`
+   arm. TTFT-only: it does not change decode TPS (TTFT is subtracted from the metric) and the
+   added system prompt means output is not compared to baseline.
+7. **CUDA graph mode tuning** once the baseline is known (see `eager`/`o0` diagnostics).
+8. ✅ **Patched vLLM 0.31.0** — the harness is version-aware: on a 0.31.0 install the three
+   0.18.0 backports are not required (the fixes are native), `env` reports the backport status,
+   and the [install section](#build-the-serving-environment) documents the 0.31.0 path.
 
 ---
 
@@ -513,7 +575,8 @@ bench/
 tests/
   test_mtp_builder.py        sidecar builder (synthetic checkpoints; needs torch/safetensors)
   test_gpu_sampler.py        regression test for thread teardown
-  test_variants.py           arm definitions, speculation tree, quantisation flags
+  test_variants.py           arm definitions, speculation tree, quantisation/MoE/opt arms
+  test_client.py             system-prompt injection for the prefix_cache arm
   test_port_selection.py     port auto-advance / strict-port behaviour
   test_vllm_fix.py           the three vLLM 0.18.0 backports
 results/selftest/            simulated demo output (clearly marked, not a measurement)
@@ -549,6 +612,11 @@ the resulting `results/selftest/report.md` is marked **SIMULATED**.
   are kept only as `--full` diagnostics.
 - **Quantisation and tree arms are implemented but unmeasured** — the `<quant>*` arms need
   `--quant-model` (+ `--quant-method`) and the MTP/tree arms need the sidecar.
+- **Further-optimisation arms (ideas 3–6, 8) are implemented but unmeasured** — MoE-backend
+  (`--moe-backend` / `--full`), compilation/`-O` (`--opt-level` / `--compilation-config` /
+  `--full`), deeper MTP trees (`mtp5_tree` / `mtp7_tree` under `--full`), prefix caching
+  (`--prefix-caching`) and the vLLM 0.31.0 path are wired into the harness and validated by
+  `self-test`, but no GPU numbers exist for them yet.
 
 For the per-run numbers, read `results/report.md` (or `results/summary.json`), which the
 harness regenerates on every run.

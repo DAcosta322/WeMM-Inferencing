@@ -18,7 +18,7 @@ from .common import (
     utc_now,
     write_json,
 )
-from .prompts import bench_suite, quality_suite, suite_fingerprint
+from .prompts import SYSTEM_PROMPT, bench_suite, quality_suite, suite_fingerprint
 from .server import GpuSampler, ServerHandle, ServerStartError
 from .variants import Arm, RunConfig, arm_quantization, arm_spec_config
 
@@ -163,6 +163,12 @@ def _environment_hint(text: str) -> str | None:
             "FlashInfer rejected on this GPU; rerun the arm without "
             "--attention-backend FLASHINFER (the harness retries once automatically)."
         )
+    if "moe" in low and "backend" in low and ("not available" in low or "not supported" in low):
+        return (
+            "That --moe-backend is not available for this model/quantisation on this "
+            "GPU; try another value (unquantised BF16 supports triton, "
+            "flashinfer_trtllm, flashinfer_cutlass) or leave it auto."
+        )
     if "out of memory" in low or "cuda oom" in low:
         return "GPU OOM: retry with --gpu-mem 0.95 or a smaller --max-model-len."
     return None
@@ -210,6 +216,20 @@ def _merge_requested_config(snapshot: dict, arm: Arm) -> dict:
     quant = arm_quantization(arm)
     if quant and not snap.get("quantization"):
         snap["quantization"] = quant
+    if arm.prefix_cache and snap.get("prefix_caching") is None:
+        snap["prefix_caching"] = True
+    # Record requested knob values the log does not reliably expose, so the
+    # "What actually ran" table can still show them. Log evidence (above) wins.
+    for flag, key in (
+        ("--moe-backend", "moe_backend"),
+        ("--optimization-level", "optimization_level"),
+        ("--compilation-config", "compilation_config"),
+    ):
+        for i, f in enumerate(arm.extra_flags):
+            if f == flag and i + 1 < len(arm.extra_flags):
+                if not snap.get(key):
+                    snap[key] = arm.extra_flags[i + 1]
+                break
     return snap
 
 
@@ -340,7 +360,12 @@ def run_arm(
         record["snapshot"] = handle.snapshot.to_dict() if hasattr(handle.snapshot, "to_dict") else dict(handle.snapshot)
         record["snapshot"] = _merge_requested_config(record["snapshot"], arm)
 
-        client = ChatClient(handle.base_url, cfg.served_name, read_timeout=ctx.read_timeout)
+        client = ChatClient(
+            handle.base_url,
+            cfg.served_name,
+            read_timeout=ctx.read_timeout,
+            system_prompt=SYSTEM_PROMPT if arm.prefix_cache else None,
+        )
         if not client.health():
             raise ServerStartError("server reports unhealthy right after startup", log_path)
 

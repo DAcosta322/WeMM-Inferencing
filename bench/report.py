@@ -318,7 +318,7 @@ def build_report(
                 verdict = "**diverged**"
         elif row["claim"] == "baseline":
             verdict = "reference"
-        elif row["claim"] == "unknown":
+        elif row["claim"] in ("unknown", "no"):
             verdict = "not claimed"
         else:
             if rate == 1.0:
@@ -334,7 +334,13 @@ def build_report(
         )
     lines.append("")
 
-    diverging = [row for row in quality_rows if row["compared"] and (row["exact_rate"] or 0) < 1.0]
+    diverging = [
+        row
+        for row in quality_rows
+        if row["compared"]
+        and (row["exact_rate"] or 0) < 1.0
+        and row["claim"] not in ("unknown", "no")
+    ]
     for row in diverging:
         for div in row["divergences"][:1]:
             lines.append(f"<details><summary>{row['arm']} / {div['prompt_id']} divergence</summary>")
@@ -371,8 +377,8 @@ def build_report(
         "from each arm's log after the run."
     )
     lines.append("")
-    lines.append("| Arm | Attention backends (all logged) | CUDA graphs | Speculative | Quantization | TP | KV dtype | GPU blocks |")
-    lines.append("| --- | --- | --- | --- | --- | ---: | --- | ---: |")
+    lines.append("| Arm | Attention backends (all logged) | CUDA graphs | Speculative | Quantization | MoE backend | Opt | Prefix cache | TP | KV dtype | GPU blocks |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: |")
     for record in records:
         snap = record.get("snapshot") or {}
         spec = snap.get("speculative")
@@ -384,10 +390,20 @@ def build_report(
         backends = snap.get("backends") or []
         backend_text = ", ".join(backends) if backends else (snap.get("attention_backend") or "?")
         quant = snap.get("quantization") or "–"
+        moe = snap.get("moe_backend") or "–"
+        opt = snap.get("optimization_level") or ""
+        if snap.get("compilation_config"):
+            opt = (opt + " " if opt else "") + "cc:" + snap["compilation_config"]
+        if not opt:
+            opt = "default"
+        if len(opt) > 44:
+            opt = opt[:41] + "…"
+        prefix = "on" if snap.get("prefix_caching") else "–"
         lines.append(
             f"| `{record['arm']['name']}` | {backend_text} | "
-            f"{snap.get('cuda_graphs')} | {spec_txt} | {quant} | {snap.get('tensor_parallel') or '?'} | "
-            f"{snap.get('kv_cache_dtype') or '?'} | {snap.get('gpu_blocks') or '–'} |"
+            f"{snap.get('cuda_graphs')} | {spec_txt} | {quant} | {moe} | {opt} | {prefix} | "
+            f"{snap.get('tensor_parallel') or '?'} | {snap.get('kv_cache_dtype') or '?'} | "
+            f"{snap.get('gpu_blocks') or '–'} |"
         )
     lines.append("")
 
@@ -429,7 +445,8 @@ def build_report(
     )
     lines.append(
         "- One server per arm, started fresh and stopped afterwards; "
-        "prefix caching disabled for every arm."
+        "prefix caching is disabled for every arm except `prefix_cache`, which "
+        "enables it together with a fixed system prompt."
     )
     lines.append("")
 

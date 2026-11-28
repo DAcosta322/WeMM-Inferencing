@@ -7,6 +7,9 @@ import unittest
 from pathlib import Path
 
 from bench.variants import (
+    MOE_BACKENDS,
+    MOE_BACKENDS_UNQUANTIZED,
+    OPT_LEVELS,
     QUANT_METHODS,
     TREE_BRANCHING,
     TREE_DEPTH,
@@ -136,6 +139,75 @@ class ArmBuildTest(unittest.TestCase):
         data = arm.to_dict()
         self.assertEqual(data["quantization"], "fp8")
         self.assertEqual(data["speculative"], {"method": "mtp"})
+
+
+class OptIdeaArmTest(unittest.TestCase):
+    """Arms added for Further optimisation ideas 3/4/5/6."""
+
+    def _cfg(self, **kwargs) -> RunConfig:
+        return RunConfig(mtp_head=Path("/tmp/mtp_head"), **kwargs)
+
+    def test_moe_backend_registry_matches_vllm(self) -> None:
+        self.assertIn("flashinfer_trtllm", MOE_BACKENDS)
+        self.assertIn("flashinfer_cutlass", MOE_BACKENDS)
+        self.assertIn("cutlass", MOE_BACKENDS)
+        self.assertEqual(set(MOE_BACKENDS_UNQUANTIZED), {"triton", "flashinfer_trtllm", "flashinfer_cutlass"})
+
+    def test_moe_backend_single_arm(self) -> None:
+        arms = build_arms(self._cfg(moe_backend="cutlass"), full=False)
+        arm = next(a for a in arms if a.name == "moe_cutlass")
+        self.assertEqual(arm.extra_flags, ["--moe-backend", "cutlass"])
+        self.assertEqual(arm.claim_exact, "exact")
+        self.assertFalse(arm.requires_quant)
+
+    def test_opt_level_single_arm(self) -> None:
+        arms = build_arms(self._cfg(opt_level=1), full=False)
+        arm = next(a for a in arms if a.name == "o1")
+        self.assertEqual(arm.extra_flags, ["--optimization-level", "1"])
+
+    def test_opt_level_zero_arm_is_selectable_by_default(self) -> None:
+        arms = build_arms(self._cfg(opt_level=0), full=False)
+        arm = next(a for a in arms if a.name == "o0")
+        self.assertEqual(arm.kind, "opt")
+        picked = select_arms(arms, "default")
+        self.assertIn("o0", [a.name for a in picked])
+
+    def test_compilation_config_single_arm(self) -> None:
+        arms = build_arms(self._cfg(compilation_config='{"mode":3}'), full=False)
+        arm = next(a for a in arms if a.name == "compile_cfg")
+        self.assertEqual(arm.extra_flags, ["--compilation-config", '{"mode":3}'])
+
+    def test_prefix_cache_arm_replaces_no_enable_flag(self) -> None:
+        arms = build_arms(self._cfg(prefix_caching=True), full=False)
+        arm = next(a for a in arms if a.name == "prefix_cache")
+        self.assertTrue(arm.prefix_cache)
+        self.assertEqual(arm.claim_exact, "no")
+        flags = arm.flags(RunConfig())
+        self.assertIn("--enable-prefix-caching", flags)
+        self.assertNotIn("--no-enable-prefix-caching", flags)
+
+    def test_full_adds_deeper_trees_and_sweeps(self) -> None:
+        arms = build_arms(self._cfg(), full=True)
+        names = {a.name for a in arms}
+        for expected in (
+            "mtp5_tree", "mtp7_tree",
+            "moe_triton", "moe_flashinfer_trtllm", "moe_flashinfer_cutlass",
+            "o0", "o3",
+        ):
+            self.assertIn(expected, names)
+        self.assertNotIn("moe_cutlass", names)  # not valid for unquantised BF16
+
+    def test_full_mtp_tree_arm_uses_requested_depth(self) -> None:
+        arms = build_arms(self._cfg(), full=True)
+        arm = next(a for a in arms if a.name == "mtp5_tree")
+        spec = arm_spec_config(arm)
+        self.assertEqual(spec["num_speculative_tokens"], 5)
+        self.assertEqual(len(ast.literal_eval(spec["speculative_token_tree"])), tree_node_count(5, TREE_BRANCHING))
+
+    def test_dedupes_overlapping_full_and_explicit_arms(self) -> None:
+        arms = build_arms(self._cfg(moe_backend="triton"), full=True)
+        names = [a.name for a in arms]
+        self.assertEqual(names.count("moe_triton"), 1)
 
 
 if __name__ == "__main__":

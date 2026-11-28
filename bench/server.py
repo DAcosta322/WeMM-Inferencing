@@ -47,6 +47,10 @@ class ServerSnapshot:
     quantization: str | None = None
     speculative_token_tree: str | None = None
     tree_nodes: int | None = None
+    moe_backend: str | None = None
+    prefix_caching: bool | None = None
+    optimization_level: str | None = None
+    compilation_config: str | None = None
     tensor_parallel: int | None = None
     kv_cache_dtype: str | None = None
     max_model_len: int | None = None
@@ -65,6 +69,10 @@ class ServerSnapshot:
             "quantization": self.quantization,
             "speculative_token_tree": self.speculative_token_tree,
             "tree_nodes": self.tree_nodes,
+            "moe_backend": self.moe_backend,
+            "prefix_caching": self.prefix_caching,
+            "optimization_level": self.optimization_level,
+            "compilation_config": self.compilation_config,
             "tensor_parallel": self.tensor_parallel,
             "kv_cache_dtype": self.kv_cache_dtype,
             "max_model_len": self.max_model_len,
@@ -339,6 +347,17 @@ class ServerHandle:
             quant_match = re.search(r"\bquantization=([a-z0-9_]+)", low)
             if quant_match:
                 snapshot.quantization = quant_match.group(1)
+            # MoE expert kernel: vLLM logs "Using FlashInfer TRTLLM backend for
+            # Unquantized MoE" (and quantised variants) from the fused_moe oracle.
+            if "moe" in low and "backend for" in low:
+                moe_match = re.search(r"using\s+(.+?)\s+backend for", low)
+                if moe_match:
+                    snapshot.moe_backend = moe_match.group(1).strip()
+                    snapshot.evidence.append(line.strip()[:300])
+            # VllmConfig.__str__ prints `enable_prefix_caching=True/False`.
+            pc_match = re.search(r"enable_prefix_caching=(true|false)", low)
+            if pc_match:
+                snapshot.prefix_caching = pc_match.group(1) == "true"
             if "gpu blocks" in low or "gpu_blocks" in low:
                 match = re.search(r"gpu[_ ]blocks[=: ]+(\d+)", low)
                 if match:
@@ -405,6 +424,10 @@ class ServerHandle:
             "quantization",
             "speculative_token_tree",
             "tree_nodes",
+            "moe_backend",
+            "prefix_caching",
+            "optimization_level",
+            "compilation_config",
             "tensor_parallel",
             "kv_cache_dtype",
             "max_model_len",

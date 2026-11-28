@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-11-28T08:24:31+00:00",
+  "started_at": "2026-11-28T11:21:23+00:00",
   "argv": [
     "/home/daniel/Projects/Inferencing/bench/run_all.py",
     "--self-test",
@@ -26,6 +26,10 @@
     "reps": 1,
     "warmup": 0,
     "max_tokens": 256,
-    "mtp_head": "/home/daniel/Projects/Inferencing/results/selftest/mtp_head"
+    "mtp_head": "/home/daniel/Projects/Inferencing/results/selftest/mtp_head",
+    "moe_backend": null,
+    "opt_level": null,
+    "compilation_config": null,
+    "prefix_caching": false
   }
 }

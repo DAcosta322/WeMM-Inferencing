@@ -25,6 +25,24 @@ class Prompt:
     meta: dict = field(default_factory=dict)
 
 
+# A fixed system prompt shared by every request of the ``prefix_cache`` arm.
+# It is deliberately a few hundred tokens long so that, with prefix caching on,
+# its KV cache is computed once and reused across requests — cutting per-request
+# TTFT the way a production deployment with a pinned system prompt does.
+SYSTEM_PROMPT = (
+    "You are a precise technical assistant helping an engineering team evaluate "
+    "inference serving systems. When asked a question, answer directly and "
+    "concretely, state any assumptions you make, and separate facts you are "
+    "confident about from estimates. Prefer structured answers with explicit "
+    "numbers over vague prose. Do not invent citations or benchmarks you cannot "
+    "support. When a question involves arithmetic, show the working. When it "
+    "involves a tradeoff, list the options, the cost of each, and a recommended "
+    "default. Keep the tone neutral and focused on the technical substance. This "
+    "system instruction is shared verbatim across every request in the run so "
+    "that the serving engine can cache its key/value state and reuse it."
+)
+
+
 # ---------------------------------------------------------------------------
 # Short bench prompts
 # ---------------------------------------------------------------------------

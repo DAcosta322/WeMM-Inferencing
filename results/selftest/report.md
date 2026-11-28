@@ -2,12 +2,12 @@
 
 > **SIMULATED RUN** — these numbers come from the built-in mock server (`--self-test`), not from a GPU. They validate the harness end to end only.
 
-Generated: 2026-11-28T08:25:16+00:00
+Generated: 2026-11-28T11:22:08+00:00
 
 ## Result
 
-- Baseline decode TPS: **158.2 tok/s**
-- Best arm: **awq_tree** at **494.8 tok/s**, **3.13×** vs baseline
+- Baseline decode TPS: **158.1 tok/s**
+- Best arm: **awq_tree** at **494.5 tok/s**, **3.13×** vs baseline
 - Target of 2.5×: **MET**
 
 
@@ -16,13 +16,13 @@ Generated: 2026-11-28T08:25:16+00:00
 
 | Arm | Status | Decode TPS (median) | Speedup | Short ctx | Long ctx | TTFT (ms) | Accept. | Exact-out | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `baseline` | ok | 158.2 | 1.00× | 158.2 | 158.2 | 237 | – | – | reference |
-| `awq` | ok | 236.8 | 1.50× | 236.9 | 236.6 | 239 | – | 100% |  |
-| `awq_mtp3` | ok | 423.2 | 2.68× | 422.9 | 423.2 | 240 | 39% | 100% |  |
-| `awq_tree` | ok | 494.8 | 3.13× | 494.7 | 494.8 | 240 | 16% | 100% |  |
+| `baseline` | ok | 158.1 | 1.00× | 158.2 | 158.1 | 237 | – | – | reference |
+| `awq` | ok | 236.8 | 1.50× | 236.8 | 236.8 | 239 | – | 100% |  |
+| `awq_mtp3` | ok | 423.5 | 2.68× | 423.5 | 423.3 | 239 | 39% | 100% |  |
+| `awq_tree` | ok | 494.5 | 3.13× | 493.6 | 495.3 | 240 | 16% | 100% |  |
 | `baseline_recheck` | ok | 158.1 | 1.00× | 158.1 | 158.1 | 237 | – | 100% |  |
-| `mtp3` | ok | 405.8 | 2.57× | 406.1 | 405.6 | 235 | 65% | 100% |  |
-| `mtp3_tree` | ok | 320.0 | 2.02× | 320.3 | 319.8 | 234 | 16% | 100% |  |
+| `mtp3` | ok | 406.1 | 2.57× | 406.1 | 406.0 | 236 | 65% | 100% |  |
+| `mtp3_tree` | ok | 320.0 | 2.02× | 320.0 | 320.2 | 235 | 16% | 100% |  |
 
 Decode TPS = `(completion_tokens − 1) / (e2e − ttft)`, median over all measured requests; short/long are the per-context medians.
 
@@ -31,11 +31,11 @@ Decode TPS = `(completion_tokens − 1) / (e2e − ttft)`, median over all measu
 | Arm | s1 | l1 | s2 | l2 | median |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `awq` | 1.50× | 1.50× | 1.50× | 1.50× | 1.50× |
-| `awq_mtp3` | 2.68× | 2.68× | 2.67× | 2.68× | 2.68× |
-| `awq_tree` | 3.13× | 3.13× | 3.13× | 3.13× | 3.13× |
+| `awq_mtp3` | 2.68× | 2.68× | 2.68× | 2.68× | 2.68× |
+| `awq_tree` | 3.12× | 3.13× | 3.12× | 3.13× | 3.13× |
 | `baseline_recheck` | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× |
-| `mtp3` | 2.57× | 2.56× | 2.57× | 2.56× | 2.57× |
-| `mtp3_tree` | 2.02× | 2.02× | 2.03× | 2.02× | 2.02× |
+| `mtp3` | 2.57× | 2.57× | 2.56× | 2.56× | 2.57× |
+| `mtp3_tree` | 2.02× | 2.03× | 2.02× | 2.02× | 2.02× |
 
 Ratio of per-prompt median decode TPS to the baseline's median for the same prompt, then the median across prompts. This is the most robust speedup estimate because it cancels prompt-specific effects.
 
@@ -69,15 +69,15 @@ Run-to-run noise floor (identical flags, two servers): **100.0%** token prefix. 
 
 Flags are requests; the server log is the ground truth. These values are parsed from each arm's log after the run.
 
-| Arm | Attention backends (all logged) | CUDA graphs | Speculative | Quantization | TP | KV dtype | GPU blocks |
-| --- | --- | --- | --- | --- | ---: | --- | ---: |
-| `baseline` | FLASHINFER | True | – | – | 1 | auto | 4321 |
-| `awq` | FLASHINFER | True | – | awq_marlin | 1 | auto | 4321 |
-| `awq_mtp3` | FLASHINFER | True | mtp K=3 | awq_marlin | 1 | auto | 4321 |
-| `awq_tree` | FLASHINFER | True | mtp K=3 tree(14) | awq_marlin | 1 | auto | 4321 |
-| `baseline_recheck` | FLASHINFER | True | – | – | 1 | auto | 4321 |
-| `mtp3` | FLASHINFER | True | mtp K=3 | – | 1 | auto | 4321 |
-| `mtp3_tree` | FLASHINFER | True | mtp K=3 tree(14) | – | 1 | auto | 4321 |
+| Arm | Attention backends (all logged) | CUDA graphs | Speculative | Quantization | MoE backend | Opt | Prefix cache | TP | KV dtype | GPU blocks |
+| --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: |
+| `baseline` | FLASHINFER | True | – | – | – | default | – | 1 | auto | 4321 |
+| `awq` | FLASHINFER | True | – | awq_marlin | – | default | – | 1 | auto | 4321 |
+| `awq_mtp3` | FLASHINFER | True | mtp K=3 | awq_marlin | – | default | – | 1 | auto | 4321 |
+| `awq_tree` | FLASHINFER | True | mtp K=3 tree(14) | awq_marlin | – | default | – | 1 | auto | 4321 |
+| `baseline_recheck` | FLASHINFER | True | – | – | – | default | – | 1 | auto | 4321 |
+| `mtp3` | FLASHINFER | True | mtp K=3 | – | – | default | – | 1 | auto | 4321 |
+| `mtp3_tree` | FLASHINFER | True | mtp K=3 tree(14) | – | – | default | – | 1 | auto | 4321 |
 
 ## Environment
 
@@ -90,5 +90,5 @@ Flags are requests; the server log is the ground truth. These values are parsed 
 - Streaming `/v1/chat/completions`, `temperature=0`, `seed=0`, `ignore_eos=true`, `max_tokens` fixed per arm, `chat_template_kwargs.enable_thinking=false`.
 - TTFT = client time to first generated token; E2E = client time to the final content/finish chunk; output tokens from `usage.completion_tokens`.
 - 0 discarded warmups per arm, 1 measured repetitions per prompt, prompts interleaved by repetition to spread thermal drift.
-- One server per arm, started fresh and stopped afterwards; prefix caching disabled for every arm.
+- One server per arm, started fresh and stopped afterwards; prefix caching is disabled for every arm except `prefix_cache`, which enables it together with a fixed system prompt.
 
