@@ -6,7 +6,7 @@ on a single **NVIDIA RTX PRO 6000 Blackwell** (single-user). It runs a server pe
 configuration ("arm"), measures decode TPS end-to-end with a streaming client, verifies output
 quality, and writes a Markdown report plus a machine-readable `summary.json`.
 
-The current build id is `1.2.0 / 2026-11-28-gptq-tree` (`./run_bench.sh help` prints it).
+The current build id is `1.3.0 / 2026-11-28-quant` (`./run_bench.sh help` prints it).
 
 - **Everything is stdlib + `requests`** (already in the vLLM venv). Only the MTP sidecar
   builder additionally needs `torch`, `safetensors` and `huggingface_hub`.
@@ -74,8 +74,9 @@ list and [`bench/variants.py`](bench/variants.py) for the definitions.
 - **Speculative decoding (MTP, tree, n-gram)** is *lossless for greedy output*: the target
   re-verifies every draft token, so it changes only the acceptance rate, never the tokens.
   These arms carry `claim=exact`.
-- **Quantisation (GPTQ)** is *lossy*: it changes the weights, so it changes the tokens. These
-  arms carry `claim=likely` and their exact-out column is informative, not a pass/fail.
+- **Quantisation (AWQ / GPTQ / NVFP4 / FP8)** is *lossy*: it changes the weights, so it
+  changes the tokens. These arms carry `claim=likely` and their exact-out column is
+  informative, not a pass/fail.
 
 ### MTP (the grafted Qwen head)
 
@@ -97,13 +98,25 @@ vLLM 0.18.0 needs two small backports before any MTP arm can start — both are 
 
 Both are idempotent, keep `.orig` backups, and change no numerics.
 
-### GPTQ
+### Weight quantisation
 
-The `gptq*` arms pass `--quantization gptq_marlin` against an **int4 GPTQ checkpoint**, which
-must be produced offline (AutoGPTQ / llm-compressor) and supplied via `--gptq-model PATH`.
-No public GPTQ checkpoint for WeMM exists yet. Quantising the ~3 B *active* expert weights cuts
-the per-token weight traffic ~4×, which is a meaningful lever because weight reads are roughly
-half the measured decode budget.
+The `<quant>*` arms pass `--quantization <method>` against a quantised checkpoint supplied via
+`--quant-model PATH`, with the method chosen by `--quant-method` (default `awq`). Four methods
+are benchmarkable:
+
+| method | vLLM flag | bits | why |
+|---|---|---|---|
+| `awq` (default) | `awq_marlin` | 4 | equal-or-better than GPTQ, simpler calibration, and a WeMM AWQ checkpoint already exists |
+| `nvfp4` | `modelopt_fp4` | 4 (W4A8) | native Blackwell 4-bit with FP8 activations — best bandwidth/compute on sm_120, but needs an NVIDIA Model Optimizer checkpoint |
+| `gptq` | `gptq_marlin` | 4 | the reference int4 method; activation-aware but calibration-sensitive |
+| `fp8` | `fp8` | 8 (W8A8) | safest for the recurrent GDN layers (error accumulates across tokens); halves weight bytes |
+
+Quantising the ~3 B *active* expert weights cuts per-token weight traffic ~4× (4-bit) or ~2×
+(8-bit), which matters because weight reads are roughly half the measured decode budget. For
+this hybrid video model, prefer a method that keeps the recurrent GDN/linear-attention layers
+stable (`fp8` is the safe choice there) and leaves the vision tower, embeddings and `lm_head`
+unquantised — they are not on the decode-critical path. No public quantised WeMM checkpoint
+exists yet, so whichever method you pick must be produced offline first.
 
 ### Tree speculation
 
@@ -129,7 +142,7 @@ acceptance when the linear chain already accepts most tokens — measure it rath
 # 4. One-time vLLM 0.18.0 backports (rope config + eagle image-token classification).
 ./run_bench.sh fix-mtp-config
 
-# 5. Measure (starts one server per arm; ~20 min default BF16 suite, ~50 min with GPTQ).
+# 5. Measure (starts one server per arm; ~20 min default BF16 suite, ~50 min with quant arms).
 ./run_bench.sh run
 
 # 6. Rebuild the report from existing results at any time.
@@ -249,7 +262,8 @@ Common options (passed through to `bench.run_all`):
 | `--quick` | 2 repetitions instead of 5 |
 | `--arms a,b,c` | run only the named arms |
 | `--mtp-head PATH` | use an existing sidecar instead of `results/mtp_head` |
-| `--gptq-model PATH` | enable the `gptq*` arms against a GPTQ (int4) checkpoint |
+| `--quant-model PATH` | enable the `<quant>*` arms against a quantised checkpoint |
+| `--quant-method M` | `awq` (default) \| `nvfp4` \| `gptq` \| `fp8` |
 | `--gpu-mem 0.90` | vLLM `--gpu-memory-utilization` (per GPU) |
 | `--tp 2` | tensor parallel / GPU count (official WeMM recipe uses 2) |
 | `--port 8000` | preferred port; auto-advances if busy (`--strict-port` to fail) |
@@ -263,7 +277,8 @@ Useful invocations:
 ./run_bench.sh run --quick                               # faster smoke
 ./run_bench.sh run --arms baseline,mtp3                  # a subset
 ./run_bench.sh run --gpu-mem 0.95                        # if BF16 + MTP sidecar OOMs at 0.90
-./run_bench.sh run --gptq-model /path/to/wemm-gptq        # include the GPTQ arms
+./run_bench.sh run --quant-model /path/to/wemm-quant      # quantised arms (default AWQ)
+./run_bench.sh run --quant-method nvfp4 --quant-model /path/to/wemm-nvfp4
 ./run_bench.sh run --custom-flags "--moe-backend ..." --arms custom
 ./run_bench.sh self-test
 ```
@@ -272,16 +287,17 @@ Useful invocations:
 
 ## Arms
 
-Default suite (prerequisite arms are dropped automatically if not provided):
+Default suite (prerequisite arms are dropped automatically if not provided). `<quant>` is the
+selected `--quant-method` (default `awq`):
 
 | Arm | Flags | Kind | Claim |
 |---|---|---|---|
 | `baseline` | *(none)* | baseline | reference |
-| `gptq` | `--quantization gptq_marlin` (needs `--gptq-model`) | opt | likely |
+| `<quant>` | `--quantization <method>` (needs `--quant-model`) | opt | likely |
 | `mtp3` | `--speculative-config {model,mtp,3}` | opt | exact |
 | `mtp3_tree` | `+ speculative_token_tree` (depth 3, branch 2 → 14 nodes) | opt | exact |
-| `gptq_mtp3` | GPTQ + MTP K=3 | opt | likely |
-| `gptq_tree` | GPTQ + MTP tree | opt | likely |
+| `<quant>_mtp3` | quantised + MTP K=3 | opt | likely |
+| `<quant>_tree` | quantised + MTP tree | opt | likely |
 | `baseline_recheck` | identical to `baseline`, run last | opt | noise floor |
 
 `--full` additionally adds `mtp1`, `mtp5`, `mtp7`, `mtp3_fp8kv`, `single_seq`, `fp8kv`,
@@ -382,8 +398,8 @@ only useful for small or quantised checkpoints. `./run_bench.sh env` reports
 
 You are likely running a **stale copy** or from a subdirectory (e.g. `dist/`), where
 `results/mtp_head` does not exist. Extract at the harness root, run
-`./run_bench.sh list-arms` (it marks MTP arms with `[needs sidecar: …]` and GPTQ arms with
-`[needs --gptq-model]`), and check `ls results/mtp_head`.
+`./run_bench.sh list-arms` (it marks MTP arms with `[needs sidecar: …]` and quant arms with
+`[needs --quant-model]`), and check `ls results/mtp_head`.
 
 ### Every arm after `baseline` fails with `Engine core initialization failed`
 
@@ -472,7 +488,7 @@ bench/
 tests/
   test_mtp_builder.py        sidecar builder (synthetic checkpoints; needs torch/safetensors)
   test_gpu_sampler.py        regression test for thread teardown
-  test_variants.py           arm definitions, speculation tree, GPTQ flags
+  test_variants.py           arm definitions, speculation tree, quantisation flags
   test_port_selection.py     port auto-advance / strict-port behaviour
   test_vllm_fix.py           the two vLLM 0.18.0 backports
 results/selftest/            simulated demo output (clearly marked, not a measurement)
@@ -506,8 +522,8 @@ the resulting `results/selftest/report.md` is marked **SIMULATED**.
   `fix-mtp-config`) blocked it, and the acceptance-rate rerun is the remaining unknown.
 - **FP8 KV and n-gram speculation are negative results** (no gain / slower + diverging); they
   are kept only as `--full` diagnostics.
-- **GPTQ and tree arms are implemented but unmeasured** — they need `--gptq-model` and the MTP
-  sidecar respectively.
+- **Quantisation and tree arms are implemented but unmeasured** — the `<quant>*` arms need
+  `--quant-model` (+ `--quant-method`) and the MTP/tree arms need the sidecar.
 
 For the per-run numbers, read `results/report.md` (or `results/summary.json`), which the
 harness regenerates on every run.

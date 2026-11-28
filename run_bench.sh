@@ -89,7 +89,7 @@ fi
 
 usage() {
   cat <<'EOF'
-WeMM-Video-35B-A3B decode-TPS benchmark.  [harness 1.2.0 / 2026-11-28-gptq-tree]
+WeMM-Video-35B-A3B decode-TPS benchmark.  [harness 1.3.0 / 2026-11-28-quant]
 
   ./run_bench.sh env         probe GPU / vLLM / FlashInfer / WeMM patch
   ./run_bench.sh dry-run     print the exact server command for every arm
@@ -99,7 +99,8 @@ WeMM-Video-35B-A3B decode-TPS benchmark.  [harness 1.2.0 / 2026-11-28-gptq-tree]
   ./run_bench.sh self-test   validate the harness with the mock server (no GPU)
 
 Default suite (arms whose prerequisites are missing are dropped automatically):
-  baseline, gptq, mtp3, mtp3_tree, gptq_mtp3, gptq_tree, baseline_recheck
+  baseline, <quant>, mtp3, mtp3_tree, <quant>_mtp3, <quant>_tree, baseline_recheck
+  (<quant> = the --quant-method, default awq)
 
 An active venv is picked automatically. BENCH_PYTHON="$(command -v python)"
 overrides it; do not paste placeholder paths like /path/to/... into it.
@@ -110,7 +111,8 @@ Common options (passed through to bench.run_all):
   --arms a,b,c           run only the named arms
   --list-arms            show arm names
   --mtp-head PATH        use an existing sidecar instead of results/mtp_head
-  --gptq-model PATH      enable the gptq* arms against a GPTQ (int4) checkpoint
+  --quant-model PATH     enable the <quant>* arms against a quantised checkpoint
+  --quant-method METHOD  awq|nvfp4|gptq|fp8 (default awq)
   --gpu-mem 0.90         vLLM --gpu-memory-utilization (per GPU)
   --tp 2                 tensor parallel / GPU count (official WeMM recipe uses 2)
   --port 8000            preferred port; auto-advances if busy (--strict-port to fail)

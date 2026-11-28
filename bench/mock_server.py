@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .server import ServerSnapshot
-from .variants import TREE_BRANCHING, TREE_DEPTH, tree_spec_string
+from .variants import QUANT_METHODS, TREE_BRANCHING, TREE_DEPTH, tree_spec_string
 
 # Simulated per-arm profiles. ``ms_per_token`` drives the streamed latency and is
 # rebased on the measured BF16 baseline (6.3 ms/token, 159.8 tok/s); ``accept`` is
@@ -33,19 +33,44 @@ PROFILES: dict[str, dict] = {
     "fp8kv_scaled": {"ms_per_token": 6.2, "ttft_ms": 200, "accept": 0.0, "k": 0},
     "baseline_recheck": {"ms_per_token": 6.3, "ttft_ms": 202, "accept": 0.0, "k": 0},
     "pin_flashinfer": {"ms_per_token": 6.2, "ttft_ms": 200, "accept": 0.0, "k": 0},
-    "gptq": {"ms_per_token": 4.3, "ttft_ms": 205, "accept": 0.0, "k": 0, "quantized": True},
     "mtp1": {"ms_per_token": 3.57, "ttft_ms": 200, "accept": 0.85, "k": 1},
     "mtp3": {"ms_per_token": 2.44, "ttft_ms": 200, "accept": 0.65, "k": 3},
     "mtp3_tree": {"ms_per_token": 3.1, "ttft_ms": 200, "accept": 0.156, "k": 3, "tree": True},
     "mtp3_fp8kv": {"ms_per_token": 2.44, "ttft_ms": 200, "accept": 0.65, "k": 3},
-    "gptq_mtp3": {"ms_per_token": 2.39, "ttft_ms": 205, "accept": 0.39, "k": 3, "quantized": True},
-    "gptq_tree": {"ms_per_token": 2.18, "ttft_ms": 205, "accept": 0.156, "k": 3, "tree": True, "quantized": True},
     "mtp5": {"ms_per_token": 2.08, "ttft_ms": 200, "accept": 0.55, "k": 5},
     "mtp7": {"ms_per_token": 2.13, "ttft_ms": 200, "accept": 0.42, "k": 7},
     "single_seq": {"ms_per_token": 2.44, "ttft_ms": 200, "accept": 0.65, "k": 3},
     "ngram": {"ms_per_token": 7.7, "ttft_ms": 200, "accept": 0.25, "k": 4},
     "eager": {"ms_per_token": 8.5, "ttft_ms": 210, "accept": 0.0, "k": 0},
 }
+
+# Simulated per-token latency for each weight-quantisation method (placeholder).
+_QUANT_BASE_MS = {"awq": 4.2, "nvfp4": 4.0, "gptq": 4.3, "fp8": 5.0}
+
+
+def _quant_profiles() -> dict[str, dict]:
+    """Build ``<method>`` / ``<method>_mtp3`` / ``<method>_tree`` profiles."""
+    out: dict[str, dict] = {}
+    for name, qm in QUANT_METHODS.items():
+        base = _QUANT_BASE_MS.get(name, 4.3)
+        out[name] = {
+            "ms_per_token": base, "ttft_ms": 205, "accept": 0.0, "k": 0,
+            "quant_method": qm.flag,
+        }
+        # MTP K=3 on a quantised target: per-token match p~0.6 -> E≈1.18, accept 0.39.
+        out[f"{name}_mtp3"] = {
+            "ms_per_token": round((base + 0.9) / 2.176, 2), "ttft_ms": 205,
+            "accept": 0.39, "k": 3, "quant_method": qm.flag,
+        }
+        # Tree on a quantised target: per-level survival q~0.85 -> E≈2.19, accept 0.156.
+        out[f"{name}_tree"] = {
+            "ms_per_token": round((base * 1.4 + 0.5) / 3.19, 2), "ttft_ms": 205,
+            "accept": 0.156, "k": 3, "tree": True, "quant_method": qm.flag,
+        }
+    return out
+
+
+PROFILES.update(_quant_profiles())
 
 
 def _draft_nodes(profile: dict) -> int:
@@ -313,7 +338,7 @@ class MockHandle:
             if self.profile.get("tree"):
                 tree = tree_spec_string(TREE_DEPTH, TREE_BRANCHING)
                 tree_nodes = _draft_nodes(self.profile)
-        quant = "gptq_marlin" if self.profile.get("quantized") else None
+        quant = self.profile.get("quant_method")
         return MockSnapshot(
             attention_backend="FLASHINFER",
             cuda_graphs=self.arm_name != "eager",

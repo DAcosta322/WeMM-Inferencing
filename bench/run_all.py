@@ -36,6 +36,7 @@ from .measure import MeasureContext, check_gpu_idle, run_arm
 from .mock_server import MockHandle
 from .report import build_report
 from .variants import (
+    QUANT_METHODS,
     RunConfig,
     build_arms,
     render_commands,
@@ -78,9 +79,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--mtp-head", default=None, help="path to the MTP sidecar directory")
     parser.add_argument(
+        "--quant-model",
+        default=None,
+        help="path to a quantised checkpoint; enables the <quant>*/mtp arms that need it",
+    )
+    parser.add_argument(
         "--gptq-model",
         default=None,
-        help="path to a GPTQ (int4) checkpoint; enables the gptq*/mtp arms that need it",
+        dest="quant_model",
+        help=argparse.SUPPRESS,  # deprecated alias for --quant-model
+    )
+    parser.add_argument(
+        "--quant-method",
+        default="awq",
+        choices=tuple(QUANT_METHODS),
+        help="weight-quantisation method to benchmark (default: %(default)s)",
     )
     parser.add_argument("--prepare-mtp", action="store_true", help="build the MTP sidecar before running")
     parser.add_argument("--only-prepare", action="store_true")
@@ -167,13 +180,14 @@ def main(argv: list[str] | None = None) -> int:
     cfg.mtp_head = head
 
     if (
-        args.gptq_model
+        args.quant_model
         and not args.dry_run
         and not args.self_test
-        and not Path(args.gptq_model).exists()
+        and not Path(args.quant_model).exists()
     ):
-        raise SystemExit(f"--gptq-model {args.gptq_model} does not exist")
-    cfg.gptq_model = args.gptq_model
+        raise SystemExit(f"--quant-model {args.quant_model} does not exist")
+    cfg.quant_model = args.quant_model
+    cfg.quant_method = args.quant_method
 
     arms = build_arms(cfg, full=args.full)
     if args.custom_flags:
@@ -196,8 +210,8 @@ def main(argv: list[str] | None = None) -> int:
             suffix = ""
             if arm.requires_mtp and not head.exists():
                 suffix = f"  [needs sidecar: {head}]"
-            if arm.requires_gptq and not cfg.gptq_model:
-                suffix += "  [needs --gptq-model]"
+            if arm.requires_quant and not cfg.quant_model:
+                suffix += "  [needs --quant-model]"
             print(f"{arm.name:16s} {arm.kind:10s} {arm.label}{suffix}")
         return 0
 
@@ -230,11 +244,12 @@ def main(argv: list[str] | None = None) -> int:
                 "existing --mtp-head PATH. To measure without MTP, use --arms without "
                 "the mtp* names.",
             )
-        if not cfg.gptq_model:
+        if not cfg.quant_model:
             drop_or_fail(
-                "requires_gptq",
-                "need a GPTQ (int4) checkpoint; pass --gptq-model PATH to a quantised "
-                "copy of tencent/WeMM-Video-35BA3B. The gptq* arms measure that checkpoint.",
+                "requires_quant",
+                f"need a {args.quant_method} checkpoint; pass --quant-model PATH to a "
+                "quantised copy of tencent/WeMM-Video-35BA3B. The <quant>* arms measure "
+                "that checkpoint.",
             )
 
     mtp_config_broken = False
@@ -252,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(render_commands(cfg, arms))
         print(f"# model: {cfg.model}")
-        print(f"# gptq model: {cfg.gptq_model or '(none)'}")
+        print(f"# quant model: {cfg.quant_model or '(none)'} ({cfg.quant_method})")
         print(f"# mtp head: {cfg.mtp_head}")
         print(f"# arms: {', '.join(a.name for a in arms)}")
         print(
@@ -342,7 +357,8 @@ def main(argv: list[str] | None = None) -> int:
             "arms": [a.name for a in arms],
             "config": {
                 "model": cfg.model,
-                "gptq_model": cfg.gptq_model,
+                "quant_model": cfg.quant_model,
+                "quant_method": cfg.quant_method,
                 "served_name": cfg.served_name,
                 "max_model_len": cfg.max_model_len,
                 "tp_size": cfg.tp_size,

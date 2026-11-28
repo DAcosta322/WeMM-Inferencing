@@ -4,11 +4,11 @@ Arms are deliberately small and additive so that the contribution of each
 optimisation is visible:
 
     baseline          official WeMM recipe, BF16, TP=1, nothing else
-    gptq              + --quantization gptq_marlin (int4 weights; needs a GPTQ checkpoint)
+    <quant>           + --quantization <method> on a quantised checkpoint
     mtp3              + Qwen3.5 MTP head, K=3
     mtp3_tree         + MTP K=3 with a depth-3 / branch-2 speculation tree
-    gptq_mtp3         GPTQ weights + MTP K=3
-    gptq_tree         GPTQ weights + MTP K=3 tree
+    <quant>_mtp3      quantised weights + MTP K=3
+    <quant>_tree      quantised weights + MTP K=3 tree
     flashinfer*       + --attention-backend FLASHINFER  (* --full, diagnostic)
     fp8kv*            + --kv-cache-dtype fp8            (* --full)
     mtp3_fp8kv*       + MTP K=3 + FP8 KV                (* --full)
@@ -16,9 +16,11 @@ optimisation is visible:
     ngram*            n-gram speculation                (* --full, negative result)
     eager*            CUDA graphs off                   (* --full, diagnostic only)
 
-Every arm runs the same prompts, seeds, token limits and measurement protocol.
-Speculative arms are lossless for greedy output (the target re-verifies every
-draft token); quantised arms are lossy and are marked ``claim_exact="likely"``.
+``<quant>`` is the selected weight-quantisation method (``--quant-method``,
+default ``awq``). Every arm runs the same prompts, seeds, token limits and
+measurement protocol. Speculative arms are lossless for greedy output (the
+target re-verifies every draft token); quantised arms are lossy and are marked
+``claim_exact="likely"``.
 """
 
 from __future__ import annotations
@@ -31,13 +33,52 @@ from pathlib import Path
 TREE_DEPTH = 3
 TREE_BRANCHING = 2
 
-GPTQ_FLAGS = ["--quantization", "gptq_marlin"]
+
+@dataclass(frozen=True)
+class QuantMethod:
+    """A weight-quantisation method the harness can benchmark."""
+
+    name: str
+    flag: str  # vLLM --quantization value
+    label: str
+    bits: int
+    note: str
+
+
+# Ordered so ``awq`` (the recommended default) is first. The vLLM ``flag`` values
+# are verified against vllm/model_executor/layers/quantization/__init__.py (0.18.0).
+QUANT_METHODS: dict[str, QuantMethod] = {
+    "awq": QuantMethod(
+        "awq", "awq_marlin", "AWQ int4 (W4A16)", 4,
+        "Equal-or-better than GPTQ with simpler calibration; a WeMM AWQ checkpoint "
+        "already exists.",
+    ),
+    "nvfp4": QuantMethod(
+        "nvfp4", "modelopt_fp4", "NVFP4 (W4A8, Blackwell)", 4,
+        "Native sm_120 4-bit with FP8 activations; best Blackwell bandwidth/compute, "
+        "but needs an NVIDIA Model Optimizer checkpoint.",
+    ),
+    "gptq": QuantMethod(
+        "gptq", "gptq_marlin", "GPTQ int4 (W4A16)", 4,
+        "Reference int4 method; activation-aware Hessian, calibration-sensitive.",
+    ),
+    "fp8": QuantMethod(
+        "fp8", "fp8", "FP8 (W8A8)", 8,
+        "Safer for the recurrent GDN/linear-attention layers (error accumulates across "
+        "tokens); halves weight bytes rather than quartering them.",
+    ),
+}
+
+
+def quant_flags(method: str) -> list[str]:
+    return ["--quantization", QUANT_METHODS[method].flag]
 
 
 @dataclass
 class RunConfig:
     model: str = "tencent/WeMM-Video-35BA3B"
-    gptq_model: str | None = None  # path to a GPTQ-quantised checkpoint (int4)
+    quant_model: str | None = None  # path to a quantised checkpoint (method via quant_method)
+    quant_method: str = "awq"  # key into QUANT_METHODS
     served_name: str = "wemm-35b"
     max_model_len: int = 8192
     tp_size: int = 1
@@ -100,8 +141,8 @@ class Arm:
     claim_exact: str = "exact"  # exact | likely | no | baseline | unknown
     note: str = ""
     requires_mtp: bool = False
-    requires_gptq: bool = False
-    model: str | None = None  # override RunConfig.model (e.g. a GPTQ checkpoint)
+    requires_quant: bool = False
+    model: str | None = None  # override RunConfig.model (e.g. a quantised checkpoint)
 
     def flags(self, cfg: RunConfig) -> list[str]:
         return cfg.common_flags() + self.extra_flags
@@ -116,7 +157,7 @@ class Arm:
             "claim_exact": self.claim_exact,
             "note": self.note,
             "requires_mtp": self.requires_mtp,
-            "requires_gptq": self.requires_gptq,
+            "requires_quant": self.requires_quant,
             "speculative": arm_spec_config(self),
             "quantization": arm_quantization(self),
         }
@@ -199,19 +240,25 @@ def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
     ]
 
     mtp_ready = cfg.mtp_head is not None
+    qname = cfg.quant_method
+    if qname not in QUANT_METHODS:
+        raise ValueError(
+            f"unknown --quant-method {qname!r}; choose from {', '.join(QUANT_METHODS)}"
+        )
+    qm = QUANT_METHODS[qname]
 
-    # GPTQ arms are always built (they need --gptq-model to actually run); the
-    # orchestrator drops or errors on them when the checkpoint is missing.
+    # Quantised arms are always built (they need --quant-model to actually run);
+    # the orchestrator drops or errors on them when the checkpoint is missing.
     arms.append(
         Arm(
-            name="gptq",
-            label="GPTQ int4 (gptq_marlin)",
+            name=qname,
+            label=qm.label,
             kind="opt",
-            model=cfg.gptq_model,
-            extra_flags=GPTQ_FLAGS,
+            model=cfg.quant_model,
+            extra_flags=quant_flags(qname),
             claim_exact="likely",
-            note="Lossy: int4 weights cut per-token weight traffic ~4x; relaxes the token-exact gate.",
-            requires_gptq=True,
+            note=f"{qm.note} Lossy: relaxes the token-exact gate.",
+            requires_quant=True,
         )
     )
 
@@ -241,32 +288,30 @@ def build_arms(cfg: RunConfig, full: bool = False) -> list[Arm]:
                 requires_mtp=True,
             )
         )
-
-    if mtp_ready:
         arms.append(
             Arm(
-                name="gptq_mtp3",
-                label="GPTQ + MTP K=3",
+                name=f"{qname}_mtp3",
+                label=f"{qm.label} + MTP K=3",
                 kind="opt",
-                model=cfg.gptq_model,
-                extra_flags=GPTQ_FLAGS + _mtp_spec(cfg.mtp_head, 3),
+                model=cfg.quant_model,
+                extra_flags=quant_flags(qname) + _mtp_spec(cfg.mtp_head, 3),
                 claim_exact="likely",
                 note="Quantised target drifts the draft head's argmax; expect lower acceptance (p~0.6).",
                 requires_mtp=True,
-                requires_gptq=True,
+                requires_quant=True,
             )
         )
         arms.append(
             Arm(
-                name="gptq_tree",
-                label=f"GPTQ + MTP tree (depth {TREE_DEPTH}, branch {TREE_BRANCHING})",
+                name=f"{qname}_tree",
+                label=f"{qm.label} + MTP tree (depth {TREE_DEPTH}, branch {TREE_BRANCHING})",
                 kind="opt",
-                model=cfg.gptq_model,
-                extra_flags=GPTQ_FLAGS + _mtp_tree_spec(cfg.mtp_head, 3),
+                model=cfg.quant_model,
+                extra_flags=quant_flags(qname) + _mtp_tree_spec(cfg.mtp_head, 3),
                 claim_exact="likely",
                 note="Quantised target + tree verification; highest-yield combination.",
                 requires_mtp=True,
-                requires_gptq=True,
+                requires_quant=True,
             )
         )
 
@@ -392,8 +437,8 @@ def render_commands(cfg: RunConfig, arms: list[Arm]) -> str:
     lines = []
     for arm in arms:
         model = arm.model or cfg.model
-        if arm.requires_gptq and not arm.model:
-            model = "<GPTQ-CHECKPOINT>"
+        if arm.requires_quant and not arm.model:
+            model = "<QUANT-CHECKPOINT>"
         cmd = build_server_cmd(
             model, cfg.served_name, cfg.host, cfg.port, arm.flags(cfg)
         )

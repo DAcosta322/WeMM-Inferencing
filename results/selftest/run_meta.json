@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-11-28T06:15:29+00:00",
+  "started_at": "2026-11-28T08:24:31+00:00",
   "argv": [
     "/home/daniel/Projects/Inferencing/bench/run_all.py",
     "--self-test",
@@ -8,16 +8,17 @@
   "self_test": true,
   "arms": [
     "baseline",
-    "gptq",
+    "awq",
     "mtp3",
     "mtp3_tree",
-    "gptq_mtp3",
-    "gptq_tree",
+    "awq_mtp3",
+    "awq_tree",
     "baseline_recheck"
   ],
   "config": {
     "model": "tencent/WeMM-Video-35BA3B",
-    "gptq_model": null,
+    "quant_model": null,
+    "quant_method": "awq",
     "served_name": "wemm-35b",
     "max_model_len": 8192,
     "tp_size": 1,

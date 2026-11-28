@@ -2,12 +2,12 @@
 
 > **SIMULATED RUN** — these numbers come from the built-in mock server (`--self-test`), not from a GPU. They validate the harness end to end only.
 
-Generated: 2026-11-28T06:16:15+00:00
+Generated: 2026-11-28T08:25:16+00:00
 
 ## Result
 
-- Baseline decode TPS: **158.1 tok/s**
-- Best arm: **gptq_tree** at **453.4 tok/s**, **2.87×** vs baseline
+- Baseline decode TPS: **158.2 tok/s**
+- Best arm: **awq_tree** at **494.8 tok/s**, **3.13×** vs baseline
 - Target of 2.5×: **MET**
 
 
@@ -16,13 +16,13 @@ Generated: 2026-11-28T06:16:15+00:00
 
 | Arm | Status | Decode TPS (median) | Speedup | Short ctx | Long ctx | TTFT (ms) | Accept. | Exact-out | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `baseline` | ok | 158.1 | 1.00× | 158.1 | 158.1 | 239 | – | – | reference |
-| `baseline_recheck` | ok | 158.0 | 1.00× | 158.1 | 158.0 | 237 | – | 100% |  |
-| `gptq` | ok | 231.3 | 1.46× | 231.3 | 231.4 | 239 | – | 100% |  |
-| `gptq_mtp3` | ok | 414.4 | 2.62× | 414.2 | 414.6 | 240 | 39% | 100% |  |
-| `gptq_tree` | ok | 453.4 | 2.87× | 453.7 | 453.1 | 240 | 16% | 100% |  |
-| `mtp3` | ok | 406.3 | 2.57× | 406.5 | 406.0 | 234 | 65% | 100% |  |
-| `mtp3_tree` | ok | 320.3 | 2.03× | 320.2 | 320.5 | 235 | 16% | 100% |  |
+| `baseline` | ok | 158.2 | 1.00× | 158.2 | 158.2 | 237 | – | – | reference |
+| `awq` | ok | 236.8 | 1.50× | 236.9 | 236.6 | 239 | – | 100% |  |
+| `awq_mtp3` | ok | 423.2 | 2.68× | 422.9 | 423.2 | 240 | 39% | 100% |  |
+| `awq_tree` | ok | 494.8 | 3.13× | 494.7 | 494.8 | 240 | 16% | 100% |  |
+| `baseline_recheck` | ok | 158.1 | 1.00× | 158.1 | 158.1 | 237 | – | 100% |  |
+| `mtp3` | ok | 405.8 | 2.57× | 406.1 | 405.6 | 235 | 65% | 100% |  |
+| `mtp3_tree` | ok | 320.0 | 2.02× | 320.3 | 319.8 | 234 | 16% | 100% |  |
 
 Decode TPS = `(completion_tokens − 1) / (e2e − ttft)`, median over all measured requests; short/long are the per-context medians.
 
@@ -30,12 +30,12 @@ Decode TPS = `(completion_tokens − 1) / (e2e − ttft)`, median over all measu
 
 | Arm | s1 | l1 | s2 | l2 | median |
 | --- | ---: | ---: | ---: | ---: | ---: |
+| `awq` | 1.50× | 1.50× | 1.50× | 1.50× | 1.50× |
+| `awq_mtp3` | 2.68× | 2.68× | 2.67× | 2.68× | 2.68× |
+| `awq_tree` | 3.13× | 3.13× | 3.13× | 3.13× | 3.13× |
 | `baseline_recheck` | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× |
-| `gptq` | 1.46× | 1.46× | 1.46× | 1.46× | 1.46× |
-| `gptq_mtp3` | 2.62× | 2.62× | 2.62× | 2.62× | 2.62× |
-| `gptq_tree` | 2.87× | 2.87× | 2.87× | 2.86× | 2.87× |
-| `mtp3` | 2.57× | 2.57× | 2.57× | 2.57× | 2.57× |
-| `mtp3_tree` | 2.03× | 2.03× | 2.03× | 2.03× | 2.03× |
+| `mtp3` | 2.57× | 2.56× | 2.57× | 2.56× | 2.57× |
+| `mtp3_tree` | 2.02× | 2.02× | 2.03× | 2.02× | 2.02× |
 
 Ratio of per-prompt median decode TPS to the baseline's median for the same prompt, then the median across prompts. This is the most robust speedup estimate because it cancels prompt-specific effects.
 
@@ -43,8 +43,8 @@ Ratio of per-prompt median decode TPS to the baseline's median for the same prom
 
 | Arm | Acceptance rate | Mean accepted length | Drafts | Accepted | Tree nodes |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `gptq_mtp3` | 39.0% | 2.17 | 472 | 552 | – |
-| `gptq_tree` | 15.6% | 3.18 | 322 | 702 | 14 |
+| `awq_mtp3` | 39.0% | 2.17 | 472 | 552 | – |
+| `awq_tree` | 15.6% | 3.18 | 322 | 702 | 14 |
 | `mtp3` | 65.0% | 2.95 | 347 | 677 | – |
 | `mtp3_tree` | 15.6% | 3.18 | 322 | 702 | 14 |
 
@@ -58,10 +58,10 @@ Run-to-run noise floor (identical flags, two servers): **100.0%** token prefix. 
 
 | Arm | Claim | Exact | First 64 tok | Prefix (median) | Verdict |
 | --- | --- | ---: | ---: | ---: | --- |
+| `awq` | likely | 4/4 | 4/4 | 100.0% | identical |
+| `awq_mtp3` | likely | 4/4 | 4/4 | 100.0% | identical |
+| `awq_tree` | likely | 4/4 | 4/4 | 100.0% | identical |
 | `baseline_recheck` | baseline | 4/4 | 4/4 | 100.0% | noise floor |
-| `gptq` | likely | 4/4 | 4/4 | 100.0% | identical |
-| `gptq_mtp3` | likely | 4/4 | 4/4 | 100.0% | identical |
-| `gptq_tree` | likely | 4/4 | 4/4 | 100.0% | identical |
 | `mtp3` | exact | 4/4 | 4/4 | 100.0% | identical |
 | `mtp3_tree` | exact | 4/4 | 4/4 | 100.0% | identical |
 
@@ -72,10 +72,10 @@ Flags are requests; the server log is the ground truth. These values are parsed 
 | Arm | Attention backends (all logged) | CUDA graphs | Speculative | Quantization | TP | KV dtype | GPU blocks |
 | --- | --- | --- | --- | --- | ---: | --- | ---: |
 | `baseline` | FLASHINFER | True | – | – | 1 | auto | 4321 |
+| `awq` | FLASHINFER | True | – | awq_marlin | 1 | auto | 4321 |
+| `awq_mtp3` | FLASHINFER | True | mtp K=3 | awq_marlin | 1 | auto | 4321 |
+| `awq_tree` | FLASHINFER | True | mtp K=3 tree(14) | awq_marlin | 1 | auto | 4321 |
 | `baseline_recheck` | FLASHINFER | True | – | – | 1 | auto | 4321 |
-| `gptq` | FLASHINFER | True | – | gptq_marlin | 1 | auto | 4321 |
-| `gptq_mtp3` | FLASHINFER | True | mtp K=3 | gptq_marlin | 1 | auto | 4321 |
-| `gptq_tree` | FLASHINFER | True | mtp K=3 tree(14) | gptq_marlin | 1 | auto | 4321 |
 | `mtp3` | FLASHINFER | True | mtp K=3 | – | 1 | auto | 4321 |
 | `mtp3_tree` | FLASHINFER | True | mtp K=3 tree(14) | – | 1 | auto | 4321 |
 
